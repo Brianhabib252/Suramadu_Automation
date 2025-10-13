@@ -1,0 +1,14 @@
+name: Hello Example
+steps:
+  - type: navigate
+    url: https://example.com
+    wait_until: networkidle
+  - type: wait_for
+    selector: 'text=Example Domain'
+  - type: assert
+    assert: contains_text
+    selector: 'text=Example Domain'
+    value: Example Domain
+  - type: artifact
+    artifact: screenshot
+    path: hello-example.png

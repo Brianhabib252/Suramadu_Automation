@@ -1,0 +1,34 @@
+name: Suramadu Pending Scan
+steps:
+  - type: navigate
+    url: https://suramadu.pta-surabaya.go.id/auth/masuk
+    wait_until: networkidle
+  - type: wait_for
+    selector: form#form-login
+  - type: type
+    selector: form#form-login input[name="nip"]
+    value: '{{env.SURAMADU_USERNAME}}'
+  - type: type
+    selector: form#form-login input[name="pass"]
+    value: '{{env.SURAMADU_PASSWORD}}'
+  - type: click
+    selector: 'form#form-login button[type="submit"]:has-text("Sign In")'
+  - type: wait_for
+    state: networkidle
+  - type: navigate
+    url: https://suramadu.pta-surabaya.go.id/superuser/pengadilan_berita
+    wait_until: networkidle
+  - type: wait_for
+    selector: 'table'
+  - type: foreach
+    selector: 'tr:has(td:has-text("Belum Dikonfirmasi"))'
+    steps:
+      - type: in_row_click
+        selector: 'button:has-text("Aksi"), a:has-text("Detail")'
+      - type: wait_for
+        state: networkidle
+      - type: navigate
+        url: https://suramadu.pta-surabaya.go.id/superuser/pengadilan_berita
+        wait_until: networkidle
+      - type: wait_for
+        selector: 'table'

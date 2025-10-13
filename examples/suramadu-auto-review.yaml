@@ -1,0 +1,79 @@
+name: Suramadu Auto Review
+steps:
+  - type: navigate
+    url: https://suramadu.pta-surabaya.go.id/auth/masuk
+    wait_until: networkidle
+  - type: wait_for
+    selector: form#form-login
+  - type: type
+    selector: form#form-login input[name="nip"]
+    value: '{{env.SURAMADU_USERNAME}}'
+  - type: type
+    selector: form#form-login input[name="pass"]
+    value: '{{env.SURAMADU_PASSWORD}}'
+  - type: click
+    selector: 'form#form-login button[type="submit"]:has-text("Sign In")'
+  - type: wait_for
+    timeout_ms: 10000
+  - type: navigate
+    url: https://suramadu.pta-surabaya.go.id/superuser/pengadilan_berita
+    wait_until: domcontentloaded
+    timeout_ms: 10000
+  - type: wait_for
+    selector: '#default-datatable_filter input'
+    timeout_ms: 300000
+  - type: type
+    selector: '#default-datatable_filter input'
+    value: 'Status : Belum Dikonfirmasi'
+    mode: clear
+  - type: while_selector
+    selector: '#default-datatable tbody tr:has(td:has-text("Belum Dikonfirmasi"))'
+    max_iterations: 50
+    steps:
+      - type: type
+        selector: '#default-datatable_filter input'
+        value: 'Status : Belum Dikonfirmasi'
+        mode: clear
+      - type: click
+        selector: 'xpath=//*[@id="default-datatable"]/tbody/tr[1]/td[4]/div/button'
+      - type: wait_for
+        selector: 'xpath=//*[@id="default-datatable"]/tbody/tr[1]/td[4]/div/div/a[1]'
+        timeout_ms: 300000
+      - type: click
+        selector: 'xpath=//*[@id="default-datatable"]/tbody/tr[1]/td[4]/div/div/a[1]'
+      - type: wait_for
+        state: load
+        timeout_ms: 60000
+      - type: wait_for
+        selector: 'xpath=//*[@id="form-blog"]/div[5]/div/div/div[2]'
+        timeout_ms: 300000
+      - type: extract_news
+      - type: ai_evaluate
+      - type: artifact
+        artifact: screenshot
+      - type: artifact
+        artifact: html
+      - type: decision_apply
+        ok_selector: 'xpath=//*[@id="form-blog"]/div[7]/div/div[1]/label'
+        reject_selector: 'xpath=//*[@id="form-blog"]/div[7]/div/div[2]/label'
+        reason_selector: 'xpath=//*[@id="alasan-container"]/div/textarea'
+        submit_selector: 'xpath=//*[@id="form-blog"]/div[10]/div/button'
+        confirm_selector: 'xpath=/html/body/div[5]/div[7]/div/button'
+        decision_source: '{{ai.ok}}'
+        reason_source: '{{ai.rejection_message}}'
+        post_wait_state: load
+        post_wait_timeout_ms: 20000
+      - type: navigate
+        url: https://suramadu.pta-surabaya.go.id/superuser/pengadilan_berita
+        wait_until: domcontentloaded
+        timeout_ms: 60000
+      - type: wait_for
+        selector: '#default-datatable_filter input'
+        timeout_ms: 300000
+      - type: type
+        selector: '#default-datatable_filter input'
+        value: 'Status : Belum Dikonfirmasi'
+        mode: clear
+  - type: assert
+    assert: empty_selector
+    selector: '#default-datatable tbody tr:has(td:has-text("Belum Dikonfirmasi"))'
