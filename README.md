@@ -60,7 +60,7 @@ npm run dev -- --retries=2 examples/suramadu-auto-review.yaml
 Each invocation creates a timestamped run directory under `artifacts/runs/` that stores:
 - `extract-*.json` &mdash; Structured article data (text, images, signals).
 - `page-*.html` & screenshots.
-- `logger` output printed to the console with boxed step banners and indented detail bullets.
+- Modern CLI output with colored step panels, retry warnings, and ASCII-safe fallbacks for non-TTY terminals.
 
 ## How the Workflow Operates
 1. **Login** &mdash; Enters credentials and waits briefly for session cookies.

@@ -2,6 +2,14 @@ import 'dotenv/config';
 import path from 'node:path';
 import { describeTaskPlan, loadTaskFile, runTask } from './dsl/runner';
 import { BrowserTools } from './lib/browserTools';
+import {
+  defaultCliTheme,
+  formatDuration,
+  wrapPlainText,
+} from './lib/cliTheme';
+
+const cli = defaultCliTheme;
+const PANEL_TEXT_WIDTH = 44;
 
 interface CliOptions {
   taskPath?: string;
@@ -50,7 +58,9 @@ function parseArgs(args: string[]): CliOptions {
     } else if (!options.taskPath) {
       options.taskPath = arg;
     } else {
-      console.warn(`Ignoring unexpected argument "${arg}"`);
+      console.warn(
+        cli.formatStatus(`Ignoring unexpected argument "${arg}"`, 'warning'),
+      );
     }
   }
 
@@ -73,7 +83,7 @@ async function runDemo(): Promise<void> {
   try {
     await tools.navigate('https://example.com', 'networkidle');
     await tools.screenshot('demo.png');
-    console.log('OK scaffold');
+    console.log(cli.formatStatus('Demo scenario captured demo.png', 'success'));
   } finally {
     await tools.close();
   }
@@ -81,10 +91,38 @@ async function runDemo(): Promise<void> {
 
 async function runDry(taskPath: string): Promise<void> {
   const { task, filePath } = await loadTaskFile(taskPath);
-  console.log(`[dry-run] Task "${task.name ?? filePath}"`);
-  for (const line of describeTaskPlan(task)) {
-    console.log(`  ${line}`);
-  }
+  const displayName = task.name ?? filePath;
+  const headerLines = cli.formatBox([
+    `${cli.symbols.info} ${cli.heading('Dry Run')}`,
+    `${cli.symbols.pointer} ${cli.label(displayName)}`,
+    `${cli.symbols.bullet} ${cli.muted(
+      `${task.steps.length} planned step${task.steps.length === 1 ? '' : 's'}`,
+    )}`,
+  ]);
+  console.log('');
+  headerLines.forEach((line) => console.log(line));
+  describeTaskPlan(task).forEach((rawLine, index) => {
+    const match = /^\[\d+\]\s*(.*)$/.exec(rawLine);
+    const description = match?.[1] ?? rawLine;
+    const stepNumber = String(index + 1).padStart(2, '0');
+    const segments = wrapPlainText(description, PANEL_TEXT_WIDTH);
+    if (segments.length === 0) {
+      console.log(
+        `${cli.symbols.pointer} ${cli.muted(`#${stepNumber}`)} ${cli.label(
+          description,
+        )}`,
+      );
+      return;
+    }
+    console.log(
+      `${cli.symbols.pointer} ${cli.muted(`#${stepNumber}`)} ${cli.label(
+        segments[0],
+      )}`,
+    );
+    segments.slice(1).forEach((segment) => {
+      console.log(`  ${cli.label(segment)}`);
+    });
+  });
 }
 
 async function runFromDsl(options: CliOptions): Promise<void> {
@@ -104,22 +142,85 @@ async function runFromDsl(options: CliOptions): Promise<void> {
     slowMoMs: options.slowMoMs,
   });
 
-  console.log(
-    `Running task "${task.name ?? filePath}" (runId=${runId}) with ${
-      task.steps.length
-    } steps...`,
+  const totalSteps = task.steps.length;
+  const displayName = task.name ?? filePath;
+  const metadataParts = [
+    options.headless ? 'Headless' : 'Headful',
+    options.browserChannel ? `channel:${options.browserChannel}` : undefined,
+    options.retries ? `retries:${options.retries}` : undefined,
+    options.slowMoMs ? `slowmo:${options.slowMoMs}ms` : undefined,
+  ].filter((part): part is string => Boolean(part));
+  const runIdSegments = wrapPlainText(runId, PANEL_TEXT_WIDTH);
+  const metadataSegments = wrapMetadata(metadataParts, PANEL_TEXT_WIDTH);
+  const headerLines: string[] = [
+    `${cli.symbols.step} ${cli.heading('Automation Run')}`,
+    `${cli.symbols.pointer} ${cli.label(displayName)}`,
+  ];
+  if (runIdSegments.length === 0) {
+    headerLines.push(`${cli.symbols.info} ${cli.muted(`Run ${runId}`)}`);
+  } else {
+    headerLines.push(`${cli.symbols.info} ${cli.muted('Run')}`);
+    runIdSegments.forEach((segment) => {
+      headerLines.push(`  ${cli.muted(segment)}`);
+    });
+  }
+  headerLines.push(
+    `${cli.symbols.bullet} ${cli.muted(
+      `${totalSteps} step${totalSteps === 1 ? '' : 's'}`,
+    )}`,
   );
+  if (metadataSegments.length > 0) {
+    headerLines.push(`${cli.symbols.pointer} ${cli.muted(metadataSegments[0])}`);
+    metadataSegments.slice(1).forEach((segment) => {
+      headerLines.push(`  ${cli.muted(segment)}`);
+    });
+  }
+  console.log('');
+  cli.formatBox(headerLines).forEach((line) => console.log(line));
 
+  const runStarted = process.hrtime.bigint();
   try {
     await runTask(tools, task, {
       runId,
       artifactsDir: runArtifactsDir,
       retries: options.retries,
     });
-    console.log(`Task completed (runId=${runId})`);
+    const elapsedMs =
+      Number(process.hrtime.bigint() - runStarted) / 1_000_000;
+    console.log(
+      cli.formatStatus(
+        `Run ${runId} completed in ${formatDuration(elapsedMs)}`,
+        'success',
+      ),
+    );
   } finally {
     await tools.close();
   }
+}
+
+function wrapMetadata(parts: string[], limit: number): string[] {
+  if (parts.length === 0) {
+    return [];
+  }
+  const lines: string[] = [];
+  let current = '';
+  for (const part of parts) {
+    if (!current) {
+      current = part;
+      continue;
+    }
+    const candidate = `${current} | ${part}`;
+    if (candidate.length <= limit) {
+      current = candidate;
+    } else {
+      lines.push(current);
+      current = part;
+    }
+  }
+  if (current) {
+    lines.push(current);
+  }
+  return lines;
 }
 
 async function main(): Promise<void> {
@@ -141,6 +242,15 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error('Automation failed:', error);
+  const message =
+    (error && typeof error === 'object' && 'message' in error
+      ? (error as { message?: string }).message
+      : undefined) ?? (error !== undefined ? String(error) : 'Unknown error');
+  console.error(cli.formatStatus(`Automation failed: ${message}`, 'error'));
+  if (error instanceof Error && error.stack) {
+    console.error(error.stack);
+  } else if (error !== undefined) {
+    console.error(error);
+  }
   process.exitCode = 1;
 });

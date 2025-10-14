@@ -4,6 +4,11 @@ import type { Locator } from 'playwright';
 import { parse } from 'yaml';
 import { BrowserTools } from '../lib/browserTools';
 import type { LoadState } from '../lib/browserTools';
+import {
+  defaultCliTheme,
+  formatDuration,
+  wrapPlainText,
+} from '../lib/cliTheme';
 import { extractNews, type NewsExtractionResult } from '../lib/newsExtract';
 import { aiEvaluate, type AiEvaluationResult } from '../lib/policyLLM';
 import {
@@ -46,6 +51,8 @@ export function describeTaskPlan(task: TaskDefinition): string[] {
   });
 }
 
+const cli = defaultCliTheme;
+
 export interface RunTaskOptions {
   runId?: string;
   artifactsDir?: string;
@@ -70,8 +77,10 @@ export async function runTask(
   const total = task.steps.length;
   for (const [index, step] of task.steps.entries()) {
     const label = describeStep(step);
-    logStepBanner(index + 1, total, label);
-    let attempt = 0;
+    const stepNumber = index + 1;
+    logStepBanner(stepNumber, total, label);
+    const startedAt = process.hrtime.bigint();
+    let retryCount = 0;
     // eslint-disable-next-line no-constant-condition
     while (true) {
       try {
@@ -83,18 +92,25 @@ export async function runTask(
         });
         break;
       } catch (error) {
-        if (attempt >= maxRetries || !shouldRetryError(error)) {
+        if (retryCount >= maxRetries || !shouldRetryError(error)) {
           throw error;
         }
-        attempt += 1;
-        console.warn(
-          `Retrying step "${label}" (attempt ${attempt + 1}/${maxRetries + 1}) due to:`,
-          error,
+        retryCount += 1;
+        logDetail(
+          0,
+          `retrying step "${label}" (${retryCount + 1}/${maxRetries + 1})`,
+          'warning',
         );
+        const errorMessage =
+          (error as { message?: string }).message ?? String(error);
+        logDetail(1, errorMessage, 'warning');
       }
     }
+    const durationMs =
+      Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+    logStepComplete(stepNumber, total, durationMs, retryCount);
     if (state.shouldHalt) {
-      logDetail(0, 'break condition met; halting remaining steps.');
+      logDetail(0, 'break condition met; halting remaining steps.', 'warning');
       return;
     }
   }
@@ -583,10 +599,12 @@ async function runDecisionApplyStep(
         timeoutMs: postWaitTimeout,
       });
     } catch (error) {
-      console.warn(
-        `${indent(context.depth + 1)}decision_apply post-wait (${postWaitState}) skipped: ${String(
+      logDetail(
+        context.depth + 1,
+        `decision_apply post-wait (${postWaitState}) skipped: ${String(
           (error as { message?: string }).message ?? error,
         )}`,
+        'warning',
       );
     }
   }
@@ -809,27 +827,46 @@ function escapeAttributeSelector(value: string): string {
   return value.replace(/(["\\])/g, '\\$1');
 }
 
-function indent(level: number): string {
-  if (level <= 0) {
-    return '';
-  }
-  return '  '.repeat(level);
-}
-
-function logDetail(depth: number, message: string): void {
-  console.log(`${indent(depth)}- ${message}`);
+function logDetail(
+  depth: number,
+  message: string,
+  tone: 'info' | 'success' | 'warning' | 'error' = 'info',
+): void {
+  console.log(cli.formatDetail(depth, message, tone));
 }
 
 function logStepBanner(current: number, total: number, label: string): void {
-  const heading = `Step ${current}/${total}`;
-  const lines = [heading, label];
-  const width = Math.max(...lines.map((line) => line.length)) + 6;
-  const border = '='.repeat(width);
-  const format = (text: string): string => `| ${text.padEnd(width - 4)} |`;
-  console.log(`\n${border}`);
-  console.log(format(heading));
-  console.log(format(label));
-  console.log(border);
+  const labelSegments = wrapPlainText(label, 44);
+  const lines = [`${cli.symbols.step} ${cli.heading(`Step ${current}/${total}`)}`];
+  if (labelSegments.length === 0) {
+    lines.push(`${cli.symbols.pointer} ${cli.label(label)}`);
+  } else {
+    lines.push(`${cli.symbols.pointer} ${cli.label(labelSegments[0])}`);
+    for (const segment of labelSegments.slice(1)) {
+      lines.push(`  ${cli.label(segment)}`);
+    }
+  }
+  console.log('');
+  for (const line of cli.formatBox(lines)) {
+    console.log(line);
+  }
+}
+
+function logStepComplete(
+  current: number,
+  total: number,
+  durationMs: number,
+  retries: number,
+): void {
+  const retrySeparator = cli.useUnicode ? ' · ' : ' | ';
+  const retryText =
+    retries > 0
+      ? `${retrySeparator}${retries} retr${retries === 1 ? 'y' : 'ies'}`
+      : '';
+  const message = `Step ${current}/${total} complete in ${formatDuration(
+    durationMs,
+  )}${retryText}`;
+  console.log(cli.formatStatus(message, 'success'));
 }
 
 function interpretBoolean(value: string): boolean | undefined {
