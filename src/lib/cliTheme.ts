@@ -197,16 +197,11 @@ export function createCliTheme(
         return [];
       }
       const paddingLeft = 1;
-      const contentWidth = Math.max(
-        ...lines.map((line) => visibleLength(theme, line)),
-      );
-      const innerWidth = Math.max(contentWidth + paddingLeft, 4);
+      const borderLength = 50;
       const topBorder =
-        boxChars.topLeft +
-        boxChars.horizontal.repeat(innerWidth);
+        boxChars.topLeft + boxChars.horizontal.repeat(borderLength);
       const bottomBorder =
-        boxChars.bottomLeft +
-        boxChars.horizontal.repeat(innerWidth);
+        boxChars.bottomLeft + boxChars.horizontal.repeat(borderLength);
       const padLine = (line: string): string => {
         return (
           boxChars.vertical +
