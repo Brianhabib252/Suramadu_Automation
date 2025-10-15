@@ -119,12 +119,12 @@ export class BrowserTools {
           try {
             await this.page.goto(url, {
               waitUntil: waitUntil === 'networkidle' ? 'domcontentloaded' : waitUntil,
-              timeout: Math.min(timeoutMs ?? this.defaultTimeoutMs, 60_000),
+              timeout: timeoutMs ?? this.defaultTimeoutMs,
             });
             if (waitUntil === 'networkidle') {
               await this.page
                 .waitForLoadState('networkidle', {
-                  timeout: Math.min(timeoutMs ?? this.defaultTimeoutMs, 30_000),
+                  timeout: timeoutMs ?? this.defaultTimeoutMs,
                 })
                 .catch(() => {});
             }
@@ -212,6 +212,10 @@ export class BrowserTools {
       await locator.waitFor({ state: 'visible' });
       return locator.innerText();
     });
+  }
+
+  getDefaultTimeout(): number {
+    return this.defaultTimeoutMs;
   }
 
   async saveHtml(filename = 'page.html'): Promise<string> {
@@ -312,11 +316,11 @@ export class BrowserTools {
         (current) => {
           return this.urlsMatch(current, targetUrl, target);
         },
-        { timeout: Math.min(this.defaultTimeoutMs, 60_000) },
+        { timeout: this.defaultTimeoutMs },
       );
       await this.page
         .waitForLoadState('networkidle', {
-          timeout: Math.min(this.defaultTimeoutMs, 30_000),
+          timeout: this.defaultTimeoutMs,
         })
         .catch(() => {});
       return true;

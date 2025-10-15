@@ -56,11 +56,14 @@ npm run dev -- --chrome examples/suramadu-auto-review.yaml
 
 # Retry flaky steps up to 2 additional times
 npm run dev -- --retries=2 examples/suramadu-auto-review.yaml
+
+# Plain-text logging (no color/box decorations) for debugging
+npm run dev:plain -- examples/suramadu-auto-review.yaml
 ```
 Each invocation creates a timestamped run directory under `artifacts/runs/` that stores:
 - `extract-*.json` &mdash; Structured article data (text, images, signals).
 - `page-*.html` & screenshots.
-- Modern CLI output with colored step panels, retry warnings, and ASCII-safe fallbacks for non-TTY terminals.
+- Modern CLI output with colored step panels, retry warnings, and ASCII-safe fallbacks for non-TTY terminals (switch to `npm run dev:plain` for undecorated logs).
 
 ## How the Workflow Operates
 1. **Login** &mdash; Enters credentials and waits briefly for session cookies.

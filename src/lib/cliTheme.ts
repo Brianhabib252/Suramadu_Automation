@@ -66,6 +66,79 @@ const ansiRegex = new RegExp(
   'g',
 );
 
+function createPlainTheme(): CliTheme {
+  const box: BoxChars = {
+    topLeft: '',
+    topRight: '',
+    bottomLeft: '',
+    bottomRight: '',
+    horizontal: '',
+    vertical: '',
+  };
+  const symbols: Symbols = {
+    step: '*',
+    pointer: '>',
+    bullet: '-',
+    success: 'OK',
+    warning: '!!',
+    error: 'XX',
+    info: 'i',
+    detailStem: '',
+    spacer: ' ',
+  };
+  return {
+    useColor: false,
+    useUnicode: false,
+    box,
+    symbols,
+    style: (_codes, text) => text,
+    bold: (text) => text,
+    heading: (text) => text,
+    label: (text) => text,
+    accent: (text) => text,
+    highlight: (text) => text,
+    muted: (text) => text,
+    success: (text) => text,
+    warning: (text) => text,
+    error: (text) => text,
+    formatBox(lines: string[]): string[] {
+      return lines;
+    },
+    formatDetail(depth: number, message: string, tone: Tone = 'info'): string {
+      const indent = depth > 0 ? '  '.repeat(depth) : '';
+      const icon =
+        tone === 'success'
+          ? symbols.success
+          : tone === 'warning'
+          ? symbols.warning
+          : tone === 'error'
+          ? symbols.error
+          : symbols.bullet;
+      return `${indent}${icon} ${message}`;
+    },
+    formatStatus(message: string, tone: Tone): string {
+      const prefix =
+        tone === 'success'
+          ? '[OK]'
+          : tone === 'warning'
+          ? '[WARN]'
+          : tone === 'error'
+          ? '[ERR]'
+          : '[INFO]';
+      return `${prefix} ${message}`;
+    },
+    divider(label?: string): string {
+      if (!label) {
+        return '--------------------------------------------------';
+      }
+      return `--- ${label} ---`;
+    },
+    stripAnsi(text: string): string {
+      return text.replace(ansiRegex, '');
+    },
+  };
+}
+
 function visibleLength(theme: CliTheme, text: string): number {
   return theme.stripAnsi(text).length;
 }
@@ -173,6 +246,9 @@ function toneColor(theme: CliTheme, tone: Tone): (text: string) => string {
 export function createCliTheme(
   stream: NodeJS.WriteStream = process.stdout,
 ): CliTheme {
+  if (process.env.CLI_PLAIN_MODE === '1') {
+    return createPlainTheme();
+  }
   const useColor = shouldUseColor(stream);
   const useUnicode = shouldUseUnicode(stream);
   const boxChars = createBoxChars(useUnicode);
@@ -222,7 +298,12 @@ export function createCliTheme(
           : tone === 'error'
           ? symbols.error
           : symbols.bullet;
-      const coloredMessage = toneColor(theme, tone)(message);
+      const shouldRespectCustomColor =
+        useColor && message.includes('\u001b[');
+      const colorize = shouldRespectCustomColor
+        ? (text: string) => text
+        : toneColor(theme, tone);
+      const coloredMessage = colorize(message);
       return `${symbols.detailStem} ${branchPrefix}${icon} ${coloredMessage}`;
     },
     formatStatus(message: string, tone: Tone): string {

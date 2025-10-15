@@ -585,14 +585,15 @@ async function runDecisionApplyStep(
   if (step.confirm_selector) {
     await context.tools.waitFor({
       selector: step.confirm_selector,
-      timeoutMs: 30_000,
+      timeoutMs: context.tools.getDefaultTimeout(),
     });
     await context.tools.click(step.confirm_selector);
   }
 
   const postWaitState = step.post_wait_state ?? 'networkidle';
   if (postWaitState !== 'skip') {
-    const postWaitTimeout = step.post_wait_timeout_ms ?? 120_000;
+    const postWaitTimeout =
+      step.post_wait_timeout_ms ?? context.tools.getDefaultTimeout();
     try {
       await context.tools.waitFor({
         state: postWaitState,
@@ -661,11 +662,14 @@ async function runForEachStep(
     context.state.currentItemDir = itemDir;
     logDetail(
       context.depth + 1,
-      `row ${index + 1}/${total} -> ${step.selector}`,
+      formatRowLabel(index + 1, total, step.selector),
     );
     for (const nestedStep of step.steps) {
       const description = describeStep(nestedStep);
-      logDetail(context.depth + 2, description);
+      logDetail(
+        context.depth + 2,
+        colorizeStepDescription(description),
+      );
       await executeStep(nestedStep, {
         ...context,
         row: rowLocator,
@@ -707,12 +711,15 @@ async function runWhileSelectorStep(
     context.state.currentItemDir = itemDir;
     logDetail(
       context.depth + 1,
-      `loop ${iteration + 1} -> ${step.selector}`,
+      formatLoopLabel(iteration + 1, step.selector),
     );
 
     for (const nestedStep of step.steps) {
       const description = describeStep(nestedStep);
-      logDetail(context.depth + 2, description);
+      logDetail(
+        context.depth + 2,
+        colorizeStepDescription(description),
+      );
       await executeStep(nestedStep, {
         ...context,
         row: undefined,
@@ -867,6 +874,108 @@ function logStepComplete(
     durationMs,
   )}${retryText}`;
   console.log(cli.formatStatus(message, 'success'));
+}
+
+const STEP_VERB_STYLES: Record<string, (text: string) => string> = {
+  navigate: cli.accent,
+  type: cli.highlight,
+  click: cli.success,
+  wait_for: cli.warning,
+  assert: cli.warning,
+  capture: cli.accent,
+  extract_news: cli.success,
+  ai_evaluate: cli.label,
+  decision_apply: cli.error,
+  break_if: cli.warning,
+  foreach: cli.heading,
+  while_selector: cli.heading,
+  in_row_click: cli.highlight,
+  saved: cli.accent,
+};
+
+function formatLoopLabel(iteration: number, selector: string): string {
+  if (!cli.useColor) {
+    return `loop ${iteration} -> ${selector}`;
+  }
+  return `${cli.heading(`loop ${iteration}`)} ${cli.symbols.pointer} ${cli.label(selector)}`;
+}
+
+function formatRowLabel(index: number, total: number, selector: string): string {
+  if (!cli.useColor) {
+    return `row ${index}/${total} -> ${selector}`;
+  }
+  return `${cli.highlight(`row ${index}/${total}`)} ${cli.symbols.pointer} ${cli.label(selector)}`;
+}
+
+function colorizeStepDescription(description: string): string {
+  if (!cli.useColor) {
+    return description;
+  }
+  const parts = description.split(/\s+/);
+  if (parts.length === 0) {
+    return description;
+  }
+  const verb = parts[0];
+  const stylizer =
+    STEP_VERB_STYLES[verb] ??
+    ((text: string) => cli.highlight(text));
+  const styledVerb = stylizer(verb);
+  if (parts.length === 1) {
+    return styledVerb;
+  }
+  const restStyled = parts
+    .slice(1)
+    .map((token) => styleDetailToken(token))
+    .join(' ');
+  return `${styledVerb} ${restStyled}`;
+}
+
+function styleDetailToken(token: string): string {
+  const trimmed = token.trim();
+  if (!trimmed) {
+    return token;
+  }
+  if (!cli.useColor) {
+    return trimmed === '->' ? cli.symbols.pointer : token;
+  }
+  if (trimmed === '->') {
+    return cli.muted(cli.symbols.pointer);
+  }
+  if (
+    trimmed.startsWith('#') ||
+    trimmed.startsWith('.') ||
+    trimmed.startsWith('xpath=') ||
+    trimmed.startsWith('css=') ||
+    trimmed.startsWith('text=') ||
+    trimmed.startsWith('//') ||
+    trimmed.startsWith('http') ||
+    trimmed.startsWith('https') ||
+    trimmed.includes('/') ||
+    trimmed.includes('\\')
+  ) {
+    return cli.label(token);
+  }
+  if (trimmed.startsWith('{{') && trimmed.endsWith('}}')) {
+    return cli.accent(token);
+  }
+  if (/^\d+\/\d+$/.test(trimmed) || /^\d+$/.test(trimmed)) {
+    return cli.accent(token);
+  }
+  const normalized = trimmed.replace(/:$/, '').toLowerCase();
+  if (['selector', 'state', 'url', 'into', 'to'].includes(normalized)) {
+    return cli.highlight(token);
+  }
+  if (
+    trimmed === trimmed.toUpperCase() &&
+    trimmed.length > 1 &&
+    /[A-Z]/.test(trimmed)
+  ) {
+    return cli.warning(token);
+  }
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    return cli.accent(token);
+  }
+  return cli.muted(token);
 }
 
 function interpretBoolean(value: string): boolean | undefined {
