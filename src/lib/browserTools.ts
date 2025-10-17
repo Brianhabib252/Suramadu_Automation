@@ -8,6 +8,7 @@ import {
   chromium,
   type LaunchOptions,
 } from 'playwright';
+import { nowJakarta } from './time';
 
 export type LoadState = 'load' | 'domcontentloaded' | 'networkidle';
 
@@ -227,7 +228,9 @@ export class BrowserTools {
     });
   }
 
-  async screenshot(filename = `screenshot-${Date.now()}.png`): Promise<string> {
+  async screenshot(
+    filename = `screenshot-${nowJakarta('yyyyMMdd-HHmmss')}.png`,
+  ): Promise<string> {
     return this.execute('screenshot', async () => {
       const filePath = await this.buildArtifactPath(filename);
       await this.page.screenshot({ path: filePath, fullPage: true });

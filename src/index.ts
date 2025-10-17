@@ -7,9 +7,19 @@ import {
   formatDuration,
   wrapPlainText,
 } from './lib/cliTheme';
+import { nowJakarta } from './lib/time';
 
 const cli = defaultCliTheme;
 const PANEL_TEXT_WIDTH = 44;
+const COMPLETION_ASCII = [
+  '  _________  __  ______  __   ______________',
+  ' / ___/ __ \\/  |/  / _ \\/ /  / __/_  __/ __/',
+  '/ /__/ /_/ / /|_/ / ___/ /__/ _/  / / / _/  ',
+  '\\___/\\____/_/  /_/_/  /____/___/ /_/ /___/  ',
+  '                                            ',
+  '                                            ',
+  '                                            ',
+];
 
 interface CliOptions {
   taskPath?: string;
@@ -68,7 +78,7 @@ function parseArgs(args: string[]): CliOptions {
 }
 
 function createRunId(): string {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const timestamp = nowJakarta('yyyyMMdd-HHmmss');
   const random = Math.random().toString(36).slice(-4);
   return `run-${timestamp}-${random}`;
 }
@@ -193,6 +203,9 @@ async function runFromDsl(options: CliOptions): Promise<void> {
         'success',
       ),
     );
+    for (const line of COMPLETION_ASCII) {
+      console.log(cli.success(line));
+    }
   } finally {
     await tools.close();
   }
