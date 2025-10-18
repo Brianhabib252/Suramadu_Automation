@@ -196,6 +196,14 @@ function buildResultFromGemini(
         );
 
   const primaryViolation = harmonizedViolations[0];
+  const rejectionId =
+    ok
+      ? undefined
+      : !violationsChanged && gemini.rejection_message_id
+      ? gemini.rejection_message_id
+      : primaryViolation
+      ? slugViolation(primaryViolation)
+      : undefined;
 
   return {
     ok,
@@ -203,12 +211,7 @@ function buildResultFromGemini(
     reasons,
     confidence: gemini.confidence ?? (ok ? 0.7 : 0.5),
     rejection_message: rejectionMessage,
-    rejection_message_id:
-      ok
-        ? undefined
-        : primaryViolation
-        ? slugViolation(primaryViolation)
-        : gemini.rejection_message_id,
+    rejection_message_id: rejectionId,
     source: 'gemini',
     details,
     rawGemini: gemini,
