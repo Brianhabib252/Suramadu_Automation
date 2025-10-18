@@ -1,3 +1,8 @@
+/**
+ * DOM extraction utilities that collect article content, metadata, and quality
+ * signals from the Suramadu news detail page. These signals feed both the
+ * local policy engine and the Gemini-powered review.
+ */
 import type { Page } from 'playwright';
 
 export interface ExtractedImage {
@@ -32,6 +37,11 @@ type RawExtraction = {
 
 const IMAGE_HOST_ALLOWLIST = new Set(['i.ibb.co', 'imgbb.com']);
 
+/**
+ * Scrape the active article view, returning raw HTML/text, discovered images,
+ * the parsed event date, and aggregate signals (sentence counts, host usage,
+ * etc.) that drive downstream policy checks.
+ */
 export async function extractNews(page: Page): Promise<NewsExtractionResult> {
   const pageUrl = page.url();
   const raw = await page.evaluate<RawExtraction>(() => {

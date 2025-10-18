@@ -1,3 +1,10 @@
+/**
+ * CLI entry point for the Suramadu automation runner.
+ * - Parses CLI flags to determine dry-run, demo, or live execution.
+ * - Spins up Playwright via BrowserTools when running real workflows.
+ * - Renders themed output panels and status updates for the operator.
+ * - Bridges YAML task files with the lower-level DSL runner.
+ */
 import 'dotenv/config';
 import path from 'node:path';
 import { describeTaskPlan, loadTaskFile, runTask } from './dsl/runner';
@@ -30,6 +37,10 @@ interface CliOptions {
   slowMoMs?: number;
 }
 
+/**
+ * Parse CLI arguments into strongly typed options, applying defaults and
+ * ignoring unexpected flags rather than exiting early.
+ */
 function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
     dryRun: false,
@@ -83,6 +94,9 @@ function createRunId(): string {
   return `run-${timestamp}-${random}`;
 }
 
+/**
+ * Run a minimal screenshot demo when the CLI is invoked without a task file.
+ */
 async function runDemo(): Promise<void> {
   const tools = await BrowserTools.launch({
     artifactsDir: path.resolve(process.cwd(), 'artifacts'),
@@ -99,6 +113,9 @@ async function runDemo(): Promise<void> {
   }
 }
 
+/**
+ * Render the planned step list for a task file without touching the browser.
+ */
 async function runDry(taskPath: string): Promise<void> {
   const { task, filePath } = await loadTaskFile(taskPath);
   const displayName = task.name ?? filePath;
@@ -135,6 +152,10 @@ async function runDry(taskPath: string): Promise<void> {
   });
 }
 
+/**
+ * Execute a YAML-defined task end-to-end, setting up run-specific artifacts
+ * and rendering a themed summary before and after the browser workflow.
+ */
 async function runFromDsl(options: CliOptions): Promise<void> {
   if (!options.taskPath) {
     throw new Error('Task path is required');
@@ -211,6 +232,10 @@ async function runFromDsl(options: CliOptions): Promise<void> {
   }
 }
 
+/**
+ * Greedily wrap metadata strings so they fit within the panel width used by
+ * the CLI header (e.g. retries, channel, slow motion, run id).
+ */
 function wrapMetadata(parts: string[], limit: number): string[] {
   if (parts.length === 0) {
     return [];

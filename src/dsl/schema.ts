@@ -1,3 +1,8 @@
+/**
+ * Types and validators for the YAML task DSL. Converts loosely-typed parsed
+ * data into safe Step objects with helpful error messages when workflows are
+ * misconfigured.
+ */
 import { LoadState } from '../lib/browserTools';
 
 type TypeMode = 'clear' | 'append';
@@ -115,6 +120,10 @@ export interface TaskDefinition {
   steps: Step[];
 }
 
+/**
+ * Validate a parsed YAML object, ensuring each step is well-formed and returns
+ * a strongly typed TaskDefinition used by the runner.
+ */
 export function validateTaskDefinition(
   raw: unknown,
   source = 'task',

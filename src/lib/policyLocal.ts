@@ -1,3 +1,8 @@
+/**
+ * Implements the deterministic, fast policy checks that gate the AI stage.
+ * Rules cover image hosting, language heuristics, 5W+1H completeness, sentence
+ * thresholds, freshness, and routine-content detection.
+ */
 import type { ExtractedImage, NewsSignals } from './newsExtract';
 
 export interface PolicyInput {
@@ -76,6 +81,10 @@ const EXCEPTION_KEYWORDS = [
   'sidang',
 ];
 
+/**
+ * Evaluate extracted article data against the local rule set, returning both
+ * violation codes and contextual details that downstream logic can surface.
+ */
 export function evaluateAgainstPolicy(
   input: PolicyInput,
 ): PolicyResult {

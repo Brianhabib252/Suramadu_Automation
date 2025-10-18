@@ -1,3 +1,9 @@
+/**
+ * High-level wrapper around Playwright's browser/page APIs tailored for the
+ * Suramadu automation workflows. Centralises launch configuration, error
+ * handling, artifact capture, and exposes ergonomic helpers for common UI
+ * interactions (navigation, typing, screenshots, etc).
+ */
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -39,6 +45,11 @@ export class BrowserTools {
     private readonly defaultTimeoutMs: number,
   ) {}
 
+  /**
+   * Launch a Chromium browser using project defaults, creating the artifacts
+   * directory if needed and returning a BrowserTools facade bound to a single
+   * page/context pair.
+   */
   static async launch(options: BrowserToolsOptions = {}): Promise<BrowserTools> {
     const artifactsDir =
       options.artifactsDir ??
@@ -99,6 +110,10 @@ export class BrowserTools {
     await this.browser.close();
   }
 
+  /**
+   * Navigate to a URL and wait for the requested load state, retrying once if
+   * Playwright aborts the navigation but the target URL eventually loads.
+   */
   async navigate(
     url: string,
     waitUntil: LoadState = 'load',
@@ -142,6 +157,10 @@ export class BrowserTools {
     });
   }
 
+  /**
+   * Type into an element, either clearing it first (default) or appending with
+   * human-like typing delays.
+   */
   async type(
     target: Locator | string,
     value: string,
@@ -186,6 +205,10 @@ export class BrowserTools {
     });
   }
 
+  /**
+   * Wait for either a selector, a browser load state, or a simple timeout
+   * depending on which options are provided.
+   */
   async waitFor(options: WaitForOptions): Promise<void> {
     await this.execute('waitFor', async () => {
       const { selector, state, timeoutMs } = options;
@@ -219,6 +242,9 @@ export class BrowserTools {
     return this.defaultTimeoutMs;
   }
 
+  /**
+   * Persist the current page HTML under the artifacts directory.
+   */
   async saveHtml(filename = 'page.html'): Promise<string> {
     return this.execute('saveHtml', async () => {
       const filePath = await this.buildArtifactPath(filename);
@@ -228,6 +254,10 @@ export class BrowserTools {
     });
   }
 
+  /**
+   * Capture a full-page screenshot with a Jakarta timestamp-based filename by
+   * default.
+   */
   async screenshot(
     filename = `screenshot-${nowJakarta('yyyyMMdd-HHmmss')}.png`,
   ): Promise<string> {
@@ -260,6 +290,10 @@ export class BrowserTools {
     return typeof target === 'string' ? this.page.locator(target) : target;
   }
 
+  /**
+   * Wrap a page interaction so that failures automatically capture diagnostics
+   * before surfacing the original error.
+   */
   private async execute<T>(
     action: string,
     task: () => Promise<T>,

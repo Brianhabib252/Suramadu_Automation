@@ -1,3 +1,9 @@
+/**
+ * Executes validated DSL tasks by orchestrating BrowserTools interactions,
+ * rendering CLI output, and emitting artifacts for each processed queue item.
+ * Maintains state between steps (e.g. last extraction, AI result) so later
+ * steps can reference prior outcomes.
+ */
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Locator } from 'playwright';
@@ -35,6 +41,10 @@ export interface LoadTaskResult {
   filePath: string;
 }
 
+/**
+ * Read and validate a YAML task file, returning the absolute path alongside the
+ * strongly typed task definition.
+ */
 export async function loadTaskFile(filePath: string): Promise<LoadTaskResult> {
   const absolutePath = path.isAbsolute(filePath)
     ? filePath
@@ -64,6 +74,11 @@ export async function runTask(
   task: TaskDefinition,
   options: RunTaskOptions = {},
 ): Promise<void> {
+  /**
+   * Core execution loop. Iterates through each DSL step, retrying transient
+   * Playwright failures, updating shared runner state, and logging progress to
+   * the CLI theme.
+   */
   const env = process.env;
   const runArtifactsDir = options.artifactsDir ?? tools.getArtifactsDir();
   const state: RunnerState = {
@@ -71,6 +86,9 @@ export async function runTask(
     runArtifactsDir,
     currentItemDir: undefined,
     shouldHalt: false,
+    assessedCount: 0,
+    approveCount: 0,
+    rejectCount: 0,
   };
   const maxRetries = options.retries ?? 1;
 
@@ -109,6 +127,16 @@ export async function runTask(
     const durationMs =
       Number(process.hrtime.bigint() - startedAt) / 1_000_000;
     logStepComplete(stepNumber, total, durationMs, retryCount);
+    if (index === total - 1) {
+      if (state.assessedCount > 0) {
+        logDetail(
+          0,
+          `AI summary -> assessed:${state.assessedCount} | approved:${state.approveCount} | rejected:${state.rejectCount}`,
+        );
+      } else {
+        logDetail(0, 'AI summary -> tidak ada berita yang dinilai.');
+      }
+    }
     if (state.shouldHalt) {
       logDetail(0, 'break condition met; halting remaining steps.', 'warning');
       return;
@@ -123,6 +151,9 @@ interface RunnerState {
   shouldHalt?: boolean;
   lastExtract?: NewsExtractionResult;
   lastAi?: AiEvaluationResult;
+  assessedCount: number;
+  approveCount: number;
+  rejectCount: number;
 }
 
 interface StepContext {
@@ -133,6 +164,10 @@ interface StepContext {
   depth: number;
 }
 
+/**
+ * Resolve placeholders on a step and dispatch to the matching handler.
+ * Maintains nesting depth information for logging indentation.
+ */
 async function executeStep(
   step: Step,
   context: StepContext,
@@ -514,6 +549,10 @@ async function runArtifactStep(
   }
 }
 
+/**
+ * Evaluate the most recently extracted article and stash the result so the
+ * decision step can apply it later.
+ */
 async function runAiEvaluateStep(
   context: StepContext,
 ): Promise<void> {
@@ -533,6 +572,10 @@ async function runAiEvaluateStep(
   );
 }
 
+/**
+ * Apply the AI/local decision by toggling approve/reject controls, injecting
+ * an explanation when rejecting, and respecting optional confirmation flows.
+ */
 async function runDecisionApplyStep(
   context: StepContext,
   step: DecisionApplyStep,
@@ -609,6 +652,13 @@ async function runDecisionApplyStep(
       );
     }
   }
+
+  context.state.assessedCount += 1;
+  if (decision) {
+    context.state.approveCount += 1;
+  } else {
+    context.state.rejectCount += 1;
+  }
 }
 
 async function runBreakIfStep(
@@ -630,6 +680,10 @@ async function runBreakIfStep(
   }
 }
 
+/**
+ * Capture article data via the shared extractor and persist it as a JSON
+ * artifact (per item when inside foreach/while loops).
+ */
 async function runExtractNewsStep(
   context: StepContext,
   step: ExtractNewsStep,
@@ -640,6 +694,10 @@ async function runExtractNewsStep(
   logDetail(context.depth + 1, `saved extract -> ${filePath}`);
 }
 
+/**
+ * Iterate over each matching locator, creating a child scope so nested steps
+ * can reference the current row element and create per-item artifact folders.
+ */
 async function runForEachStep(
   step: ForEachStep,
   context: StepContext,
@@ -685,6 +743,10 @@ async function runForEachStep(
   context.state.currentItemDir = previousItemDir;
 }
 
+/**
+ * Repeatedly execute nested steps while the selector still matches and an
+ * optional iteration cap has not been reached.
+ */
 async function runWhileSelectorStep(
   step: WhileSelectorStep,
   context: StepContext,

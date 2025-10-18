@@ -1,3 +1,8 @@
+/**
+ * Provides themed formatting helpers for the CLI, supporting both rich ANSI
+ * output and plain ASCII fallbacks. Used across the runner to render boxes,
+ * status lines, and tree-like step details.
+ */
 const ANSI = {
   reset: '\u001b[0m',
   bold: '\u001b[1m',

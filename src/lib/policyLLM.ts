@@ -1,9 +1,15 @@
+/**
+ * Bridges local policy evaluation with the optional Gemini review. Always
+ * applies fast heuristics first, then escalates to the LLM when the article
+ * passes image validation and an API key is configured.
+ */
 import { formatInTimeZone } from 'date-fns-tz';
 import { callGeminiPolicy, type GeminiPolicyPayload } from '../ai/geminiNewsPolicy';
 import type { NewsExtractionResult } from './newsExtract';
 import {
   evaluateAgainstPolicy,
   type PolicyDetails,
+  type PolicyResult,
 } from './policyLocal';
 
 const VIOLATION_MESSAGES: Record<string, string> = {
@@ -57,6 +63,10 @@ export interface AiEvaluateOptions {
   geminiCaller?: typeof callGeminiPolicy;
 }
 
+/**
+ * Evaluate an extracted article using local heuristics and, when available,
+ * the Gemini policy model. Returns a unified result object consumed by the DSL.
+ */
 export async function aiEvaluate(
   input: AiEvaluateInput,
   options: AiEvaluateOptions = {},
@@ -83,8 +93,7 @@ export async function aiEvaluate(
   });
 
   const localResult: AiEvaluationResult = buildResultFromLocal(
-    local.violations,
-    local.details,
+    local,
     nowJkt,
   );
 
@@ -125,7 +134,7 @@ export async function aiEvaluate(
 
     return buildResultFromGemini(
       gemini,
-      local.details,
+      local,
     );
   } catch (error) {
     // eslint-disable-next-line no-console
@@ -135,10 +144,10 @@ export async function aiEvaluate(
 }
 
 function buildResultFromLocal(
-  violations: string[],
-  details: PolicyDetails,
+  local: PolicyResult,
   nowJkt: Date,
 ): AiEvaluationResult {
+  const { violations, details } = local;
   const reasons = mapViolationsToReasons(violations, details);
   const ok = violations.length === 0;
   const rejectionMessage = buildRejectionMessage(violations, reasons, details, nowJkt);
@@ -156,33 +165,75 @@ function buildResultFromLocal(
 
 function buildResultFromGemini(
   gemini: GeminiPolicyPayload,
-  details: PolicyDetails,
+  local: PolicyResult,
 ): AiEvaluationResult {
-  const violations = gemini.violations ?? [];
-  const ok = gemini.ok ?? violations.length === 0;
+  const details = local.details;
+  const originalViolations = gemini.violations ?? [];
+  const harmonizedViolations = reconcileGeminiViolations(
+    originalViolations,
+    local,
+  );
+  const ok = gemini.ok ?? harmonizedViolations.length === 0;
 
-  const reasons =
-    gemini.reasons && gemini.reasons.length > 0
-      ? gemini.reasons
-      : mapViolationsToReasons(violations, details);
+  const violationsChanged =
+    harmonizedViolations.length !== originalViolations.length;
+  const shouldReuseGeminiReasons =
+    !violationsChanged && gemini.reasons && gemini.reasons.length > 0;
+
+  const reasons = shouldReuseGeminiReasons
+    ? (gemini.reasons as string[])
+    : mapViolationsToReasons(harmonizedViolations, details);
 
   const rejectionMessage =
-    gemini.rejection_message ??
-    buildRejectionMessage(violations, reasons, details, details.now ?? new Date());
+    ok
+      ? undefined
+      : gemini.rejection_message ??
+        buildRejectionMessage(
+          harmonizedViolations,
+          reasons,
+          details,
+          details.now ?? new Date(),
+        );
+
+  const primaryViolation = harmonizedViolations[0];
 
   return {
     ok,
-    violations,
+    violations: harmonizedViolations,
     reasons,
     confidence: gemini.confidence ?? (ok ? 0.7 : 0.5),
     rejection_message: rejectionMessage,
     rejection_message_id:
-      gemini.rejection_message_id ??
-      (violations[0] ? slugViolation(violations[0]) : undefined),
+      ok
+        ? undefined
+        : primaryViolation
+        ? slugViolation(primaryViolation)
+        : gemini.rejection_message_id,
     source: 'gemini',
     details,
     rawGemini: gemini,
   };
+}
+
+function reconcileGeminiViolations(
+  violations: string[],
+  local: PolicyResult,
+): string[] {
+  if (violations.length === 0) {
+    return violations;
+  }
+  const localCodes = new Set(local.violations);
+  const localHasFreshness =
+    localCodes.has('#T4 Up to date') || localCodes.has('#6 Up to date');
+  return violations.filter((code) => {
+    if (
+      (code === '#T4 Up to date' || code === '#6 Up to date') &&
+      !localHasFreshness
+    ) {
+      return false;
+    }
+    return true;
+  });
 }
 
 function mapViolationsToReasons(
@@ -192,6 +243,7 @@ function mapViolationsToReasons(
   if (violations.length === 0) {
     return ['Berita memenuhi seluruh kebijakan lokal.'];
   }
+  const suffix = ' (berita dikonfirmasi oleh AI)';
   return violations.map((violation) => {
     const base = VIOLATION_MESSAGES[violation] ?? violation;
     if (
@@ -199,21 +251,24 @@ function mapViolationsToReasons(
         violation === '#2 5W+1H') &&
       details.missingCoreInfo?.length
     ) {
-      return `${base} Unsur yang belum ada: ${details.missingCoreInfo.join(', ')}.`;
+      const message = `${base} Unsur yang belum ada: ${details.missingCoreInfo.join(', ')}.`;
+      return message.endsWith(suffix) ? message : `${message}${suffix}`;
     }
     if (
       (violation === '#I1 Foto Hosting' || violation === '#5 Hosting Foto') &&
       details.externalImageHosts?.length
     ) {
-      return `${base} Host terdeteksi: ${details.externalImageHosts.join(', ')}.`;
+      const message = `${base} Host terdeteksi: ${details.externalImageHosts.join(', ')}.`;
+      return message.endsWith(suffix) ? message : `${message}${suffix}`;
     }
     if (
       (violation === '#T3 Jumlah Kalimat' || violation === '#3 Paragraf') &&
       typeof details.sentenceCount === 'number'
     ) {
-      return `${base} Saat ini baru ${details.sentenceCount} kalimat.`;
+      const message = `${base} Saat ini baru ${details.sentenceCount} kalimat.`;
+      return message.endsWith(suffix) ? message : `${message}${suffix}`;
     }
-    return base;
+    return base.endsWith(suffix) ? base : `${base}${suffix}`;
   });
 }
 
@@ -228,7 +283,9 @@ function buildRejectionMessage(
   }
 
   const lines: string[] = [];
-  lines.push('Berita ditolak karena tidak memenuhi persyaratan berikut:');
+  lines.push(
+    'Berita ditolak karena tidak memenuhi persyaratan berikut: (berita dikonfirmasi oleh AI)',
+  );
   reasons.forEach((reason) => lines.push(`- ${reason}`));
 
   if (

@@ -1,8 +1,13 @@
+/**
+ * Utility script that logs into Suramadu, re-extracts a target article, and
+ * prints the AI rejection reasons to help operators understand policy failures.
+ */
 import 'dotenv/config';
 import { chromium, type Browser, type Page } from 'playwright';
 import { extractNews } from '../src/lib/newsExtract';
 import { aiEvaluate } from '../src/lib/policyLLM';
 
+// Minimal login routine shared by the script and kept here for clarity.
 async function ensureLoggedIn(page: Page, username: string, password: string): Promise<void> {
   await page.goto('https://suramadu.pta-surabaya.go.id/auth/masuk', {
     waitUntil: 'domcontentloaded',
@@ -14,6 +19,7 @@ async function ensureLoggedIn(page: Page, username: string, password: string): P
   await page.waitForLoadState('load');
 }
 
+// Launch a headless session, run extraction + AI evaluation, and print results.
 async function main(): Promise<void> {
   const username = process.env.SURAMADU_USERNAME;
   const password = process.env.SURAMADU_PASSWORD;

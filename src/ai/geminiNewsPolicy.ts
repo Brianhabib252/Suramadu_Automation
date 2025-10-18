@@ -1,3 +1,9 @@
+/**
+ * Handles prompting Google Gemini with structured article data to obtain
+ * policy decisions. Builds the JSON prompt, enforces schema validation, retries
+ * across model candidates, and merges Gemini responses with deterministic
+ * image-hosting checks.
+ */
 import { GoogleGenAI } from '@google/genai';
 import { z } from 'zod';
 
@@ -49,8 +55,13 @@ const TEXT_RULE_DEFINITIONS = [
   '3. Jumlah kalimat informatif kurang dari 12 (laporkan sebagai "#T3 Jumlah Kalimat").',
   '4. Berita diupload lebih lama dari hari kemarin (hari sabtu minggu tidak dihitung) (laporkan sebagai "#T4 Up to date").',
   '5. Berita tidak informatif (kegiatan rutin biasa seperti apel, briefing, coffee morning, senam, olahraga, kerja bakti, kultum, jumat berkah) (laporkan sebagai "#T5 Informatif").',
+  '6. Bila penilaian dilakukan pada hari Sabtu atau Minggu maka berita kegiatan pada hari Kamis dan Jumat tetap dianggap up to date dan jangan dilaporkan sebagai "#T4 Up to date".',
 ].join('\n');
 
+/**
+ * Invoke Gemini with a resilience strategy (timeouts, retries, model fallback)
+ * and return a normalized payload that adheres to the expected schema.
+ */
 export async function callGeminiPolicy(
   input: GeminiPolicyInput,
   options: GeminiPolicyCallOptions = {},
