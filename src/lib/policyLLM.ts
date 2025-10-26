@@ -41,6 +41,31 @@ const VIOLATION_MESSAGES: Record<string, string> = {
 };
 
 const JAKARTA_TZ = 'Asia/Jakarta';
+const AI_CONFIRMATION_PHRASE = 'Dikonfirmasi oleh AI';
+const AI_CONFIRMATION_SUFFIX = ` (${AI_CONFIRMATION_PHRASE})`;
+const AI_CONFIRMATION_PHRASE_LOWER = AI_CONFIRMATION_PHRASE.toLowerCase();
+
+function ensureAiConfirmationTag(text: string): string {
+  if (!text) {
+    return text;
+  }
+  if (text.toLowerCase().includes(AI_CONFIRMATION_PHRASE_LOWER)) {
+    return text;
+  }
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!line.trim()) {
+      continue;
+    }
+    const leadingWhitespaceMatch = line.match(/^\s*/);
+    const leading = leadingWhitespaceMatch ? leadingWhitespaceMatch[0] : '';
+    const trimmed = line.trim();
+    lines[i] = `${leading}${trimmed}${AI_CONFIRMATION_SUFFIX}`;
+    return lines.join('\n');
+  }
+  return `${text}${AI_CONFIRMATION_SUFFIX}`;
+}
 
 export interface AiEvaluateInput {
   extraction: Pick<NewsExtractionResult, 'html' | 'text' | 'signals' | 'images' | 'eventDate' | 'uploadDate'>;
@@ -187,20 +212,28 @@ function buildResultFromGemini(
   const shouldReuseGeminiReasons =
     !violationsChanged && gemini.reasons && gemini.reasons.length > 0;
 
-  const reasons = shouldReuseGeminiReasons
-    ? (gemini.reasons as string[])
-    : mapViolationsToReasons(harmonizedViolations, details);
+  const rawReasons: string[] =
+    shouldReuseGeminiReasons && Array.isArray(gemini.reasons)
+      ? [...gemini.reasons]
+      : mapViolationsToReasons(harmonizedViolations, details);
+  const reasons =
+    harmonizedViolations.length > 0
+      ? rawReasons.map((reason) => ensureAiConfirmationTag(reason))
+      : rawReasons;
 
-  const rejectionMessage =
-    ok
-      ? undefined
-      : gemini.rejection_message ??
-        buildRejectionMessage(
-          harmonizedViolations,
-          reasons,
-          details,
-          details.now ?? new Date(),
-        );
+  let rejectionMessage: string | undefined;
+  if (!ok) {
+    const candidateMessage =
+      gemini.rejection_message?.trim() ??
+      buildRejectionMessage(
+        harmonizedViolations,
+        reasons,
+        details,
+        details.now ?? new Date(),
+      ) ??
+      'Berita ditolak.';
+    rejectionMessage = ensureAiConfirmationTag(candidateMessage);
+  }
 
   const primaryViolation = harmonizedViolations[0];
   const rejectionId =
@@ -254,7 +287,6 @@ function mapViolationsToReasons(
   if (violations.length === 0) {
     return ['Berita memenuhi seluruh kebijakan lokal.'];
   }
-  const suffix = ' (berita dikonfirmasi oleh AI)';
   return violations.map((violation) => {
     const base = VIOLATION_MESSAGES[violation] ?? violation;
     if (
@@ -263,23 +295,23 @@ function mapViolationsToReasons(
       details.missingCoreInfo?.length
     ) {
       const message = `${base} Unsur yang belum ada: ${details.missingCoreInfo.join(', ')}.`;
-      return message.endsWith(suffix) ? message : `${message}${suffix}`;
+      return ensureAiConfirmationTag(message);
     }
     if (
       (violation === '#I1 Foto Hosting' || violation === '#5 Hosting Foto') &&
       details.externalImageHosts?.length
     ) {
       const message = `${base} Host terdeteksi: ${details.externalImageHosts.join(', ')}.`;
-      return message.endsWith(suffix) ? message : `${message}${suffix}`;
+      return ensureAiConfirmationTag(message);
     }
     if (
       (violation === '#T3 Jumlah Kalimat' || violation === '#3 Paragraf') &&
       typeof details.sentenceCount === 'number'
     ) {
       const message = `${base} Saat ini baru ${details.sentenceCount} kalimat.`;
-      return message.endsWith(suffix) ? message : `${message}${suffix}`;
+      return ensureAiConfirmationTag(message);
     }
-    return base.endsWith(suffix) ? base : `${base}${suffix}`;
+    return ensureAiConfirmationTag(base);
   });
 }
 
@@ -295,7 +327,9 @@ function buildRejectionMessage(
 
   const lines: string[] = [];
   lines.push(
-    'Berita ditolak karena tidak memenuhi persyaratan berikut: (berita dikonfirmasi oleh AI)',
+    ensureAiConfirmationTag(
+      'Berita ditolak karena tidak memenuhi persyaratan berikut:',
+    ),
   );
   reasons.forEach((reason) => lines.push(`- ${reason}`));
 

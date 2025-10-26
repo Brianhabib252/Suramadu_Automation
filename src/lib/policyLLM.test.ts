@@ -74,7 +74,13 @@ describe('policyLLM.aiEvaluate', () => {
     expect(result.ok).toBe(false);
     expect(result.violations).toEqual(['#T1 Bahasa/Jurnalistik']);
     expect(result.rejection_message_id).toBe('perbaiki_bahasa');
-    expect(result.reasons).toContain('Perbaiki penggunaan bahasa sesuai kaidah.');
+    expect(result.reasons).toContainEqual(
+      expect.stringContaining('Dikonfirmasi oleh AI'),
+    );
+    expect(result.rejection_message).toBeDefined();
+    expect(result.rejection_message?.toLowerCase()).toContain(
+      'dikonfirmasi oleh ai',
+    );
   });
 
   it('falls back to local when Gemini throws', async () => {
