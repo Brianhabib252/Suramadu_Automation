@@ -24,6 +24,7 @@ export interface NewsExtractionResult {
   text: string;
   images: ExtractedImage[];
   eventDate?: string;
+  uploadDate?: string;
   signals: NewsSignals;
 }
 
@@ -32,6 +33,7 @@ type RawExtraction = {
   text: string;
   images: ExtractedImage[];
   eventDate?: string;
+  uploadDate?: string;
   paragraphs: string[];
 };
 
@@ -198,7 +200,44 @@ export async function extractNews(page: Page): Promise<NewsExtractionResult> {
       }
     }
 
-    return { html, text, images, eventDate, paragraphs };
+    const uploadDateSelectors = [
+      '#autoclose-datepicker',
+      'input[name="tanggal_upload"]',
+      'input[name="tanggal_publish"]',
+      'input[name="tanggal_posting"]',
+    ];
+    let uploadDate: string | undefined;
+    for (const selector of uploadDateSelectors) {
+      const input = document.querySelector(selector) as
+        | HTMLInputElement
+        | HTMLTextAreaElement
+        | null;
+      if (input && typeof (input as HTMLInputElement).value === 'string') {
+        const candidate = (input as HTMLInputElement).value.trim();
+        if (candidate) {
+          uploadDate = candidate;
+          break;
+        }
+      }
+    }
+
+    if (!uploadDate) {
+      const uploadNode = selectByXPath('//*[@id="autoclose-datepicker"]');
+      if (
+        uploadNode instanceof HTMLInputElement &&
+        typeof uploadNode.value === 'string' &&
+        uploadNode.value.trim()
+      ) {
+        uploadDate = uploadNode.value.trim();
+      } else if (uploadNode?.textContent) {
+        const candidate = uploadNode.textContent.replace(/\s+/g, ' ').trim();
+        if (candidate) {
+          uploadDate = candidate;
+        }
+      }
+    }
+
+    return { html, text, images, eventDate, uploadDate, paragraphs };
   });
 
   const images = raw.images.map(normalizeImage);
@@ -239,12 +278,14 @@ export async function extractNews(page: Page): Promise<NewsExtractionResult> {
   );
 
   const eventDateISO = normalizeDate(raw.eventDate);
+  const uploadDateISO = normalizeDate(raw.uploadDate);
 
   return {
     html: raw.html,
     text: raw.text,
     images,
     eventDate: eventDateISO,
+    uploadDate: uploadDateISO,
     signals: {
       paragraphCount,
       minSentencesPerParagraph: minSentences,

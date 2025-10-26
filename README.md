@@ -6,7 +6,7 @@ Browser-based automation that reviews pending news articles in the Suramadu port
 - **Task DSL** &mdash; High-level YAML workflow (`examples/suramadu-auto-review.yaml`) that drives Playwright actions such as navigation, filtering, scraping, and decision making.
 - **Smart policy engine** &mdash; Combines a fast local validator (`src/lib/policyLocal.ts`) with Gemini for nuanced language checks (`src/ai/geminiNewsPolicy.ts`).
 - **Artifact trail** &mdash; Every run stores JSON extracts, page HTML, and screenshots under `artifacts/runs/<run-id>/` to aid audits and debugging.
-- **Extensible CLI runner** &mdash; Flags for headless/headful runs, retries, slow motion, and dry-run planning (`src/index.ts`).
+- **Extensible CLI runner** &mdash; Flags for headless/headful runs, retries, slow motion, and dry-run planning (`src/index.ts`), with terminal progress grouped into four high-level phases.
 
 ## Repository Layout
 ```
@@ -63,17 +63,13 @@ npm run dev:plain -- examples/suramadu-auto-review.yaml
 Each invocation creates a timestamped run directory under `artifacts/runs/` that stores:
 - `extract-*.json` &mdash; Structured article data (text, images, signals).
 - `page-*.html` & screenshots.
-- Modern CLI output with colored step panels, retry warnings, and ASCII-safe fallbacks for non-TTY terminals (switch to `npm run dev:plain` for undecorated logs).
+- Modern CLI output with colored step panels, retry warnings, four-phase progress (`Step 1/4` … `Step 4/4`), and ASCII-safe fallbacks for non-TTY terminals (switch to `npm run dev:plain` for undecorated logs).
 
 ## How the Workflow Operates
-1. **Login** &mdash; Enters credentials and waits briefly for session cookies.
-2. **Queue scanning** &mdash; Filters the datatable to `Status : Belum Dikonfirmasi` and loops each row.
-3. **Article capture** &mdash; Opens the detail view, extracts DOM text, images, and metadata (`src/lib/newsExtract.ts`).
-4. **Policy evaluation**
-   - Local rules check image hosting, Indonesian language heuristics, 5W+1H coverage, minimum 12 sentences, freshness (weekend-aware), and routine-content heuristics (`src/lib/policyLocal.ts`).
-   - Gemini is called with the extracted text, sentence count, hosted image flags, and Jakarta current date if the local rules pass image validation (`src/lib/policyLLM.ts` + `src/ai/geminiNewsPolicy.ts`).
-5. **Decision application** &mdash; Selects approve/reject radio buttons, writes AI reasons on rejection, submits, and navigates back to the queue (`src/dsl/runner.ts`).
-6. **Loop continuation** &mdash; Reapplies the datatable filter and repeats until no pending rows remain.
+1. **Bootstrap session (Steps 1–6)** &mdash; Navigates to the login page, submits credentials, and waits for the authenticated dashboard.
+2. **Prepare queue (Steps 7–9)** &mdash; Opens the news management table, focuses the search box, and applies the `Status : Belum Dikonfirmasi` filter.
+3. **Review loop (Step 10)** &mdash; Iterates each pending row: refreshes the filter, opens the article, captures DOM content (`src/lib/newsExtract.ts`), evaluates policy rules (local plus Gemini), collects artifacts, applies the decision, and returns to the queue.
+4. **Completion check (Step 11)** &mdash; Confirms the queue no longer contains pending rows before ending the run.
 
 ## Extending the DSL
 - Add or modify steps in the YAML file. Supported step types include `navigate`, `wait_for`, `type`, `click`, `while_selector`, `extract_news`, `ai_evaluate`, `decision_apply`, `artifact`, and more (see `src/dsl/schema.ts` for validation rules).

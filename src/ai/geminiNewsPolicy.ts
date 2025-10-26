@@ -30,6 +30,7 @@ export interface GeminiPolicyInput {
     hostedImageCount: number;
     sentenceCount: number;
     eventDateISO?: string;
+    uploadDateISO?: string;
     evaluationDateISO?: string;
     evaluationDateLabel?: string;
   };
@@ -50,12 +51,13 @@ const IMAGE_RULE_REASON =
   'Berita harus menyertakan foto yang diunggah melalui imgbb atau layanan hosting eksternal. Tidak ditemukan foto dari layanan hosting tersebut.';
 
 const TEXT_RULE_DEFINITIONS = [
-  '1. Tidak menggunakan Bahasa Indonesia (laporkan sebagai "#T1 Bahasa/Jurnalistik").',
+  '1. Tidak menggunakan Bahasa Indonesian yang baik (laporkan sebagai "#T1 Bahasa/Jurnalistik").',
   '2. Tidak ada unsur kapan, dimana, dan siapa pada berita (laporkan sebagai "#T2 Unsur Waktu/Lokasi/Pelaku").',
   '3. Jumlah kalimat informatif kurang dari 12 (laporkan sebagai "#T3 Jumlah Kalimat").',
-  '4. Berita diupload lebih lama dari hari kemarin (hari sabtu minggu tidak dihitung) (laporkan sebagai "#T4 Up to date").',
-  '5. Berita tidak informatif (kegiatan rutin biasa seperti apel, briefing, coffee morning, senam, olahraga, kerja bakti, kultum, jumat berkah) (laporkan sebagai "#T5 Informatif").',
-  '6. Bila penilaian dilakukan pada hari Sabtu atau Minggu maka berita kegiatan pada hari Kamis dan Jumat tetap dianggap up to date dan jangan dilaporkan sebagai "#T4 Up to date".',
+  '4. Tanggal berita lebih lama dari lusa kemarin atau lebih dari dua hari kerja sebelum hari ini (hari Sabtu/Minggu tidak dihitung) (laporkan sebagai "#T4 Up to date").',
+  '5. Tanggal kegiatan di deskripsi lebih lama lebih dari satu hari kerja dibanding tanggal berita diupload (hari Sabtu/Minggu tidak dihitung) (laporkan sebagai "#T4 Up to date").',
+  '6. Berita tidak informatif (kegiatan rutin biasa seperti apel, briefing, coffee morning, senam, olahraga, kerja bakti, kultum, jumat berkah) (laporkan sebagai "#T5 Informatif").',
+  '7. Bila penilaian dilakukan pada hari Sabtu atau Minggu maka berita kegiatan pada hari Kamis dan Jumat tetap dianggap up to date dan jangan dilaporkan sebagai "#T4 Up to date".',
 ].join('\n');
 
 /**
@@ -148,6 +150,7 @@ function buildPromptPayload(
   signals: GeminiPolicyInput['signals'],
 ): string {
   const eventDate = signals.eventDateISO ?? 'tidak diketahui';
+  const uploadDate = signals.uploadDateISO ?? 'tidak diketahui';
   const evaluationLabel =
     signals.evaluationDateLabel ??
     signals.evaluationDateISO ??
@@ -170,7 +173,10 @@ function buildPromptPayload(
 
   lines.push('');
   lines.push(
-    `Catatan penting: hari ini (zona waktu Jakarta/WIB) adalah ${evaluationLabel}. Kriteria 4 hanya terpenuhi bila berita lebih dari satu hari kerja sebelum tanggal ini, bukan jika tanggal kegiatan sama atau setelahnya.`,
+    `Catatan penting: hari ini (zona waktu Jakarta/WIB) adalah ${evaluationLabel}. Kriteria 4 hanya terpenuhi bila tanggal kegiatan lebih dari dua hari kerja sebelum tanggal ini (abaikan Sabtu/Minggu).`,
+  );
+  lines.push(
+    `Jika tersedia gunakan tanggal upload berikut sebagai pembanding tambahan untuk kriteria 4: ${uploadDate}. Laporkan pelanggaran bila selisih tanggal kegiatan dan tanggal upload lebih dari satu hari kerja (hari Sabtu/Minggu tidak dihitung).`,
   );
   lines.push(
     `Gunakan total kalimat informatif sebagai acuan: kriteria 3 hanya terpenuhi bila jumlah kalimat kurang dari 12. Jika total kalimat 12 atau lebih, jangan laporkan pelanggaran #T3.`,
@@ -187,6 +193,7 @@ function buildPromptPayload(
   lines.push(`- Foto hosting eksternal terdeteksi: ${signals.hostedImageCount}`);
   lines.push(`- Total kalimat informatif (perkiraan): ${signals.sentenceCount}`);
   lines.push(`- Tanggal kegiatan (ISO, jika ada): ${eventDate}`);
+  lines.push(`- Tanggal upload (ISO, jika ada): ${uploadDate}`);
   lines.push(`- Tanggal penilaian (ISO Jakarta): ${signals.evaluationDateISO ?? 'tidak diketahui'}`);
 
   lines.push('');

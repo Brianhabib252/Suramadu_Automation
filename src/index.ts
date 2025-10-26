@@ -7,7 +7,12 @@
  */
 import 'dotenv/config';
 import path from 'node:path';
-import { describeTaskPlan, loadTaskFile, runTask } from './dsl/runner';
+import {
+  describeTaskPlan,
+  loadTaskFile,
+  resolveDisplayStepCount,
+  runTask,
+} from './dsl/runner';
 import { BrowserTools } from './lib/browserTools';
 import {
   defaultCliTheme,
@@ -26,6 +31,13 @@ const COMPLETION_ASCII = [
   '                                            ',
   '                                            ',
   '                                            ',
+];
+const TIMEOUT_ASCII = [
+  '  ___ ___ ___  ___  ___ ',
+  ' | __| _ \\ _ \\/ _ \\| _ \\',
+  ' | _||   /   / (_) |   /',
+  ' |___|_|_\\_|_\\\\___/|_|_\\',
+  '                        ',
 ];
 
 interface CliOptions {
@@ -173,7 +185,7 @@ async function runFromDsl(options: CliOptions): Promise<void> {
     slowMoMs: options.slowMoMs,
   });
 
-  const totalSteps = task.steps.length;
+  const totalSteps = resolveDisplayStepCount(task.steps.length);
   const displayName = task.name ?? filePath;
   const metadataParts = [
     options.headless ? 'Headless' : 'Headful',
@@ -211,21 +223,27 @@ async function runFromDsl(options: CliOptions): Promise<void> {
 
   const runStarted = process.hrtime.bigint();
   try {
-    await runTask(tools, task, {
+    const outcome = await runTask(tools, task, {
       runId,
       artifactsDir: runArtifactsDir,
       retries: options.retries,
     });
     const elapsedMs =
       Number(process.hrtime.bigint() - runStarted) / 1_000_000;
+    const statusTone = outcome.timeoutWarnings ? 'warning' : 'success';
+    const statusMessage = outcome.timeoutWarnings
+      ? `Run ${runId} selesai dengan peringatan timeout dalam ${formatDuration(elapsedMs)}`
+      : `Run ${runId} completed in ${formatDuration(elapsedMs)}`;
     console.log(
       cli.formatStatus(
-        `Run ${runId} completed in ${formatDuration(elapsedMs)}`,
-        'success',
+        statusMessage,
+        statusTone,
       ),
     );
-    for (const line of COMPLETION_ASCII) {
-      console.log(cli.success(line));
+    if (!outcome.timeoutWarnings) {
+      for (const line of COMPLETION_ASCII) {
+        console.log(cli.success(line));
+      }
     }
   } finally {
     await tools.close();
@@ -289,6 +307,22 @@ main().catch((error) => {
     console.error(error.stack);
   } else if (error !== undefined) {
     console.error(error);
+  }
+  const combinedText = [
+    message ?? '',
+    error instanceof Error && error.stack ? error.stack : '',
+    error !== undefined && !(error instanceof Error) ? String(error) : '',
+  ]
+    .join(' ')
+    .toLowerCase();
+  if (
+    combinedText.includes('timeout') ||
+    combinedText.includes('timed out') ||
+    combinedText.includes('time out')
+  ) {
+    for (const line of TIMEOUT_ASCII) {
+      console.error(cli.error(line));
+    }
   }
   process.exitCode = 1;
 });

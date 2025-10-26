@@ -62,6 +62,69 @@ export function describeTaskPlan(task: TaskDefinition): string[] {
 }
 
 const cli = defaultCliTheme;
+const TIMEOUT_ASCII = [
+  '  ___ ___ ___  ___  ___ ',
+  ' | __| _ \\ _ \\/ _ \\| _ \\',
+  ' | _||   /   / (_) |   /',
+  ' |___|_|_\\_|_\\\\___/|_|_\\',
+  '                        ',
+];
+
+const DISPLAY_STEP_GROUPS = [6, 3, 1, 1] as const;
+const DISPLAY_STEP_GROUP_TOTAL = DISPLAY_STEP_GROUPS.reduce(
+  (sum, count) => sum + count,
+  0,
+);
+
+export function resolveDisplayStepCount(totalSteps: number): number {
+  return totalSteps === DISPLAY_STEP_GROUP_TOTAL
+    ? DISPLAY_STEP_GROUPS.length
+    : totalSteps;
+}
+
+interface StepDisplayProgress {
+  displayIndex: number;
+  displayTotal: number;
+  isGroupStart: boolean;
+  isGroupEnd: boolean;
+}
+
+function resolveDisplayStepProgress(
+  index: number,
+  totalSteps: number,
+): StepDisplayProgress {
+  if (totalSteps !== DISPLAY_STEP_GROUP_TOTAL) {
+    return {
+      displayIndex: index + 1,
+      displayTotal: totalSteps,
+      isGroupStart: true,
+      isGroupEnd: true,
+    };
+  }
+
+  let offset = 0;
+  for (let groupIndex = 0; groupIndex < DISPLAY_STEP_GROUPS.length; groupIndex += 1) {
+    const groupSize = DISPLAY_STEP_GROUPS[groupIndex];
+    const startIndex = offset;
+    const endIndex = offset + groupSize - 1;
+    if (index >= startIndex && index <= endIndex) {
+      return {
+        displayIndex: groupIndex + 1,
+        displayTotal: DISPLAY_STEP_GROUPS.length,
+        isGroupStart: index === startIndex,
+        isGroupEnd: index === endIndex,
+      };
+    }
+    offset += groupSize;
+  }
+
+  return {
+    displayIndex: index + 1,
+    displayTotal: totalSteps,
+    isGroupStart: true,
+    isGroupEnd: true,
+  };
+}
 
 export interface RunTaskOptions {
   runId?: string;
@@ -73,7 +136,7 @@ export async function runTask(
   tools: BrowserTools,
   task: TaskDefinition,
   options: RunTaskOptions = {},
-): Promise<void> {
+): Promise<{ timeoutWarnings: boolean }> {
   /**
    * Core execution loop. Iterates through each DSL step, retrying transient
    * Playwright failures, updating shared runner state, and logging progress to
@@ -89,14 +152,25 @@ export async function runTask(
     assessedCount: 0,
     approveCount: 0,
     rejectCount: 0,
+    timeoutWarnings: false,
   };
   const maxRetries = options.retries ?? 1;
 
-  const total = task.steps.length;
+  const totalSteps = task.steps.length;
+  const useGroupedDisplay = totalSteps === DISPLAY_STEP_GROUP_TOTAL;
+  let groupedElapsedMs = 0;
+  let groupedRetryCount = 0;
   for (const [index, step] of task.steps.entries()) {
     const label = describeStep(step);
     const stepNumber = index + 1;
-    logStepBanner(stepNumber, total, label);
+    const progress = resolveDisplayStepProgress(index, totalSteps);
+
+    if (!useGroupedDisplay || progress.isGroupStart) {
+      logStepBanner(progress.displayIndex, progress.displayTotal, label);
+    } else {
+      const detailLabel = `${cli.muted(`[${stepNumber}]`)} ${colorizeStepDescription(label)}`;
+      logDetail(0, detailLabel);
+    }
     const startedAt = process.hrtime.bigint();
     let retryCount = 0;
     // eslint-disable-next-line no-constant-condition
@@ -110,6 +184,9 @@ export async function runTask(
         });
         break;
       } catch (error) {
+        if (isTimeoutLike(error)) {
+          state.timeoutWarnings = true;
+        }
         if (retryCount >= maxRetries || !shouldRetryError(error)) {
           throw error;
         }
@@ -126,8 +203,29 @@ export async function runTask(
     }
     const durationMs =
       Number(process.hrtime.bigint() - startedAt) / 1_000_000;
-    logStepComplete(stepNumber, total, durationMs, retryCount);
-    if (index === total - 1) {
+    if (useGroupedDisplay) {
+      groupedElapsedMs += durationMs;
+      groupedRetryCount += retryCount;
+      const stepTag = cli.muted(`[${stepNumber}]`);
+      const attemptMessage =
+        retryCount > 0
+          ? `${stepTag} completed after ${retryCount + 1} attempts in ${formatDuration(durationMs)}`
+          : `${stepTag} completed in ${formatDuration(durationMs)}`;
+      logDetail(1, attemptMessage, 'success');
+      if (progress.isGroupEnd) {
+        logStepComplete(
+          progress.displayIndex,
+          progress.displayTotal,
+          groupedElapsedMs,
+          groupedRetryCount,
+        );
+        groupedElapsedMs = 0;
+        groupedRetryCount = 0;
+      }
+    } else {
+      logStepComplete(stepNumber, totalSteps, durationMs, retryCount);
+    }
+    if (index === totalSteps - 1) {
       if (state.assessedCount > 0) {
         logDetail(
           0,
@@ -136,12 +234,19 @@ export async function runTask(
       } else {
         logDetail(0, 'AI summary -> tidak ada berita yang dinilai.');
       }
+      if (state.timeoutWarnings) {
+        for (const line of TIMEOUT_ASCII) {
+          console.log(cli.error(line));
+        }
+      }
     }
     if (state.shouldHalt) {
       logDetail(0, 'break condition met; halting remaining steps.', 'warning');
-      return;
+      return { timeoutWarnings: state.timeoutWarnings };
     }
   }
+
+  return { timeoutWarnings: state.timeoutWarnings };
 }
 
 interface RunnerState {
@@ -154,6 +259,7 @@ interface RunnerState {
   assessedCount: number;
   approveCount: number;
   rejectCount: number;
+  timeoutWarnings: boolean;
 }
 
 interface StepContext {
@@ -563,6 +669,9 @@ async function runAiEvaluateStep(
     extraction: context.state.lastExtract,
   });
   context.state.lastAi = result;
+  if (result.timeoutWarning) {
+    context.state.timeoutWarnings = true;
+  }
   const decisionLabel = result.ok ? 'APPROVE' : 'REJECT';
   const violationLabel =
     result.violations.length > 0 ? result.violations.join(', ') : 'none';
@@ -1049,6 +1158,32 @@ function interpretBoolean(value: string): boolean | undefined {
     return false;
   }
   return undefined;
+}
+
+function isTimeoutLike(error: unknown): boolean {
+  if (!error) {
+    return false;
+  }
+  if (typeof error === 'string') {
+    const lowered = error.toLowerCase();
+    return (
+      lowered.includes('timeout') ||
+      lowered.includes('timed out') ||
+      lowered.includes('time out')
+    );
+  }
+  if (typeof error === 'object' && error !== null) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string') {
+      const lowered = message.toLowerCase();
+      return (
+        lowered.includes('timeout') ||
+        lowered.includes('timed out') ||
+        lowered.includes('time out')
+      );
+    }
+  }
+  return false;
 }
 
 function shouldRetryError(error: unknown): boolean {

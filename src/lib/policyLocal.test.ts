@@ -42,6 +42,9 @@ function createInput(
     ...overrides.signals,
   };
 
+  const baseNow = overrides.nowJkt ?? new Date('2024-10-11T00:00:00.000Z');
+  const baseUploadDate = overrides.uploadDate ?? baseNow;
+
   return {
     text: textValue,
     images:
@@ -51,8 +54,9 @@ function createInput(
         { src: 'https://i.ibb.co/sample-two.jpg', alt: '' },
       ],
     eventDate: overrides.eventDate ?? new Date('2024-10-10T00:00:00.000Z'),
+    uploadDate: baseUploadDate,
     signals: baseSignals,
-    nowJkt: overrides.nowJkt ?? new Date('2024-10-11T00:00:00.000Z'),
+    nowJkt: baseNow,
   };
 }
 
@@ -122,15 +126,43 @@ describe('policyLocal', () => {
     );
   });
 
-  it('fails freshness rule when event is older than 1 working day', () => {
+  it('flags freshness rule when event lebih lama dari batas terhadap tanggal upload', () => {
     const result = evaluateAgainstPolicy(
       createInput({
-        eventDate: new Date('2024-10-04T00:00:00.000Z'), // Friday
-        nowJkt: new Date('2024-10-08T00:00:00.000Z'), // Tuesday -> 2 working days apart
+        eventDate: new Date('2024-10-07T00:00:00.000Z'), // Monday
+        uploadDate: new Date('2024-10-10T00:00:00.000Z'), // Thursday -> 2 working days gap
+        nowJkt: new Date('2024-10-10T00:00:00.000Z'),
       }),
     );
 
     expect(result.violations).toContain('#T4 Up to date');
-    expect(result.details.eventDate).toBeInstanceOf(Date);
+    expect(result.details.workingDaysToUpload).toBeGreaterThan(1);
+  });
+
+  it('flags freshness rule when event lebih lama dari batas terhadap tanggal konfirmasi', () => {
+    const result = evaluateAgainstPolicy(
+      createInput({
+        eventDate: new Date('2024-10-03T00:00:00.000Z'), // Thursday
+        uploadDate: new Date('2024-10-04T00:00:00.000Z'), // Friday
+        nowJkt: new Date('2024-10-08T00:00:00.000Z'), // Tuesday -> 3 working days gap
+      }),
+    );
+
+    expect(result.violations).toContain('#T4 Up to date');
+    expect(result.details.workingDaysToEvaluation).toBeGreaterThan(2);
+  });
+
+  it('uses upload date as freshness reference when available', () => {
+    const result = evaluateAgainstPolicy(
+      createInput({
+        eventDate: new Date('2024-10-01T00:00:00.000Z'), // Tuesday
+        uploadDate: new Date('2024-10-02T00:00:00.000Z'), // Wednesday (within 1 working day)
+        nowJkt: new Date('2024-10-03T00:00:00.000Z'), // Thursday (within 2 working days)
+      }),
+    );
+
+    expect(result.violations).not.toContain('#T4 Up to date');
+    expect(result.details.uploadDate).toBeInstanceOf(Date);
+    expect(result.details.workingDaysToEvaluation).toBeLessThanOrEqual(2);
   });
 });

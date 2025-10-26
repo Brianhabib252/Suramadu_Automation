@@ -5,7 +5,7 @@ import { aiEvaluate } from './policyLLM';
 
 const baseExtraction: Pick<
   NewsExtractionResult,
-  'html' | 'text' | 'signals' | 'images' | 'eventDate'
+  'html' | 'text' | 'signals' | 'images' | 'eventDate' | 'uploadDate'
 > = {
   html: '<p>Example</p>',
   text:
@@ -23,6 +23,7 @@ const baseExtraction: Pick<
     { src: 'https://i.ibb.co/sample-two.png', alt: 'b' },
   ],
   eventDate: '2024-10-10T00:00:00.000Z',
+  uploadDate: '2024-10-11T00:00:00.000Z',
 };
 
 const originalEnv = process.env.GEMINI_API_KEY;

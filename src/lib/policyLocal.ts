@@ -9,6 +9,7 @@ export interface PolicyInput {
   text: string;
   images: ExtractedImage[];
   eventDate?: string | Date;
+  uploadDate?: string | Date;
   signals: NewsSignals;
   nowJkt: Date;
 }
@@ -19,8 +20,11 @@ export interface PolicyDetails {
   imageCount?: number;
   externalImageHosts?: string[];
   eventDate?: Date;
+  uploadDate?: Date;
   now?: Date;
   routineKeywordsHit?: string[];
+  workingDaysToUpload?: number;
+  workingDaysToEvaluation?: number;
 }
 
 export interface PolicyResult {
@@ -88,7 +92,7 @@ const EXCEPTION_KEYWORDS = [
 export function evaluateAgainstPolicy(
   input: PolicyInput,
 ): PolicyResult {
-  const { text, images = [], eventDate, signals, nowJkt } = input;
+  const { text, images = [], eventDate, uploadDate, signals, nowJkt } = input;
   const details: PolicyDetails = {
     imageCount: signals.imageCount,
     now: nowJkt,
@@ -137,8 +141,37 @@ export function evaluateAgainstPolicy(
 
   // Rule #T4
   const eventDateValue = toDateOrUndefined(eventDate);
+  const uploadDateValue = toDateOrUndefined(uploadDate);
   details.eventDate = eventDateValue;
-  const freshnessOk = isFreshEnough(eventDateValue, nowJkt);
+  if (uploadDateValue) {
+    details.uploadDate = uploadDateValue;
+  }
+  let freshnessOk = true;
+  if (!eventDateValue) {
+    freshnessOk = false;
+  } else {
+    const evaluationDateValue = nowJkt;
+    const workingDaysToEvaluation = workingDaysBetween(
+      eventDateValue,
+      evaluationDateValue,
+    );
+    details.workingDaysToEvaluation = workingDaysToEvaluation;
+    if (workingDaysToEvaluation > 2) {
+      freshnessOk = false;
+    }
+
+    if (uploadDateValue) {
+      const workingDaysToUpload = workingDaysBetween(
+        eventDateValue,
+        uploadDateValue,
+      );
+      details.workingDaysToUpload = workingDaysToUpload;
+      if (workingDaysToUpload > 1) {
+        freshnessOk = false;
+      }
+    }
+  }
+
   if (!freshnessOk) {
     violations.push(RULE_FRESHNESS);
   }
@@ -299,20 +332,6 @@ function toDateOrUndefined(value?: string | Date): Date | undefined {
   }
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed;
-}
-
-function isFreshEnough(
-  eventDate: Date | undefined,
-  now: Date,
-): boolean {
-  if (!eventDate) {
-    return false;
-  }
-  if (eventDate > now) {
-    return true;
-  }
-  const diff = workingDaysBetween(eventDate, now);
-  return diff <= 1;
 }
 
 function workingDaysBetween(start: Date, end: Date): number {

@@ -22,7 +22,7 @@ const VIOLATION_MESSAGES: Record<string, string> = {
   '#T3 Jumlah Kalimat':
     'Pastikan teks berisi minimal 12 kalimat informatif.',
   '#T4 Up to date':
-    'Berita melewati batas waktu H+1 hari kerja dari tanggal kegiatan.',
+    'Berita melewati batas waktu maksimal dua hari kerja dari tanggal kegiatan atau lebih dari satu hari kerja dari tanggal upload.',
   '#T5 Informatif':
     'Perkaya isi berita agar tidak sekadar kegiatan rutin tanpa nilai berita.',
   // Legacy mappings for compatibility with existing data
@@ -43,7 +43,7 @@ const VIOLATION_MESSAGES: Record<string, string> = {
 const JAKARTA_TZ = 'Asia/Jakarta';
 
 export interface AiEvaluateInput {
-  extraction: Pick<NewsExtractionResult, 'html' | 'text' | 'signals' | 'images' | 'eventDate'>;
+  extraction: Pick<NewsExtractionResult, 'html' | 'text' | 'signals' | 'images' | 'eventDate' | 'uploadDate'>;
   now?: Date;
 }
 
@@ -57,6 +57,7 @@ export interface AiEvaluationResult {
   source: 'gemini' | 'local';
   details: PolicyDetails;
   rawGemini?: GeminiPolicyPayload;
+  timeoutWarning?: boolean;
 }
 
 export interface AiEvaluateOptions {
@@ -88,6 +89,7 @@ export async function aiEvaluate(
     text: extraction.text,
     images: extraction.images ?? [],
     eventDate: extraction.eventDate,
+    uploadDate: extraction.uploadDate,
     signals: extraction.signals,
     nowJkt,
   });
@@ -127,6 +129,7 @@ export async function aiEvaluate(
         hostedImageCount,
         sentenceCount: extraction.signals.sentenceCount,
         eventDateISO: extraction.eventDate,
+        uploadDateISO: extraction.uploadDate,
         evaluationDateISO,
         evaluationDateLabel,
       },
@@ -136,11 +139,14 @@ export async function aiEvaluate(
       gemini,
       local,
     );
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.warn('Gemini evaluation failed, falling back to local policy:', error);
-    return localResult;
-  }
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn('Gemini evaluation failed, falling back to local policy:', error);
+      if (isTimeoutLike(error)) {
+        localResult.timeoutWarning = true;
+      }
+      return localResult;
+    }
 }
 
 function buildResultFromLocal(
@@ -160,6 +166,7 @@ function buildResultFromLocal(
     rejection_message_id: violations[0] ? slugViolation(violations[0]) : undefined,
     source: 'local',
     details,
+    timeoutWarning: false,
   };
 }
 
@@ -215,6 +222,7 @@ function buildResultFromGemini(
     source: 'gemini',
     details,
     rawGemini: gemini,
+    timeoutWarning: false,
   };
 }
 
@@ -297,6 +305,16 @@ function buildRejectionMessage(
   ) {
     const formatted = formatInTimeZone(details.eventDate, JAKARTA_TZ, 'd MMMM yyyy');
     lines.push(`- Tanggal kegiatan: ${formatted}.`);
+    if (details.uploadDate) {
+      const uploadFormatted = formatInTimeZone(details.uploadDate, JAKARTA_TZ, 'd MMMM yyyy');
+      lines.push(`- Tanggal upload: ${uploadFormatted}.`);
+    }
+    if (typeof details.workingDaysToEvaluation === 'number') {
+      lines.push(`- Selisih ke tanggal konfirmasi: ${details.workingDaysToEvaluation} hari kerja.`);
+    }
+    if (typeof details.workingDaysToUpload === 'number') {
+      lines.push(`- Selisih ke tanggal upload: ${details.workingDaysToUpload} hari kerja.`);
+    }
   }
 
   return lines.join('\n');
@@ -307,4 +325,33 @@ function slugViolation(value: string): string {
     .replace(/[^a-zA-Z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .toLowerCase();
+}
+
+function isTimeoutLike(error: unknown): boolean {
+  if (!error) {
+    return false;
+  }
+  const extractMessage = (): string | undefined => {
+    if (typeof error === 'string') {
+      return error;
+    }
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'message' in error &&
+      typeof (error as { message?: unknown }).message === 'string'
+    ) {
+      return (error as { message?: string }).message;
+    }
+    return undefined;
+  };
+  const message = extractMessage()?.toLowerCase();
+  if (!message) {
+    return false;
+  }
+  return (
+    message.includes('timeout') ||
+    message.includes('timed out') ||
+    message.includes('time out')
+  );
 }
