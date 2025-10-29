@@ -860,7 +860,7 @@ async function runWhileSelectorStep(
   step: WhileSelectorStep,
   context: StepContext,
 ): Promise<void> {
-  const maxIterations = step.max_iterations ?? 50;
+  const maxIterations = step.max_iterations ?? 100;
   const previousItemDir = context.state.currentItemDir;
   let iteration = 0;
 
