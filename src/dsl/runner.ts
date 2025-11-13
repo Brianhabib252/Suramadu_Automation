@@ -148,6 +148,8 @@ export async function runTask(
     runId: options.runId,
     runArtifactsDir,
     currentItemDir: undefined,
+    currentItemIndex: undefined,
+    currentWorkUnitName: undefined,
     shouldHalt: false,
     assessedCount: 0,
     approveCount: 0,
@@ -253,6 +255,8 @@ interface RunnerState {
   runId?: string;
   runArtifactsDir: string;
   currentItemDir?: string;
+  currentItemIndex?: number;
+  currentWorkUnitName?: string;
   shouldHalt?: boolean;
   lastExtract?: NewsExtractionResult;
   lastAi?: AiEvaluationResult;
@@ -690,6 +694,7 @@ async function runDecisionApplyStep(
   step: DecisionApplyStep,
 ): Promise<void> {
   const decision = interpretBoolean(step.decision_source);
+  let rejectionReasonText: string | undefined;
   if (decision === undefined) {
     throw new Error(
       `decision_apply expected boolean decision_source but received "${step.decision_source}"`,
@@ -730,6 +735,7 @@ async function runDecisionApplyStep(
       await context.tools.type(step.reason_selector, '', 'clear');
       await context.tools.type(step.reason_selector, reasonText, 'clear');
     }
+    rejectionReasonText = reasonText;
   }
 
   await context.tools.click(step.submit_selector);
@@ -760,6 +766,13 @@ async function runDecisionApplyStep(
         'warning',
       );
     }
+  }
+
+  if (!decision) {
+    await handleRejectedItemArtifact(
+      context,
+      rejectionReasonText ?? context.state.lastAi?.rejection_message,
+    );
   }
 
   context.state.assessedCount += 1;
@@ -799,6 +812,16 @@ async function runExtractNewsStep(
 ): Promise<void> {
   const extraction = await extractNews(context.tools.getPage());
   context.state.lastExtract = extraction;
+  const renamedDir = await applyWorkUnitDirectoryName(
+    context,
+    extraction.workUnit,
+  );
+  if (renamedDir) {
+    logDetail(
+      context.depth + 1,
+      `item folder renamed -> ${path.basename(renamedDir)}`,
+    );
+  }
   const filePath = await writeJsonArtifact(context, step.path, extraction);
   logDetail(context.depth + 1, `saved extract -> ${filePath}`);
 }
@@ -822,11 +845,15 @@ async function runForEachStep(
   }
 
   const previousItemDir = context.state.currentItemDir;
+  const previousItemIndex = context.state.currentItemIndex;
+  const previousWorkUnit = context.state.currentWorkUnitName;
 
   for (let index = 0; index < total; index += 1) {
     const rowLocator = scopeLocator.nth(index);
     const itemDir = await ensureItemDirectory(context, index);
     context.state.currentItemDir = itemDir;
+    context.state.currentItemIndex = index;
+    context.state.currentWorkUnitName = undefined;
     logDetail(
       context.depth + 1,
       formatRowLabel(index + 1, total, step.selector),
@@ -844,12 +871,16 @@ async function runForEachStep(
       });
       if (context.state.shouldHalt) {
         context.state.currentItemDir = previousItemDir;
+        context.state.currentItemIndex = previousItemIndex;
+        context.state.currentWorkUnitName = previousWorkUnit;
         return;
       }
     }
   }
 
   context.state.currentItemDir = previousItemDir;
+  context.state.currentItemIndex = previousItemIndex;
+  context.state.currentWorkUnitName = previousWorkUnit;
 }
 
 /**
@@ -862,6 +893,8 @@ async function runWhileSelectorStep(
 ): Promise<void> {
   const maxIterations = step.max_iterations ?? 100;
   const previousItemDir = context.state.currentItemDir;
+  const previousItemIndex = context.state.currentItemIndex;
+  const previousWorkUnit = context.state.currentWorkUnitName;
   let iteration = 0;
 
   // eslint-disable-next-line no-constant-condition
@@ -869,10 +902,15 @@ async function runWhileSelectorStep(
     const remaining = await context.tools.count(step.selector);
     if (remaining === 0) {
       context.state.currentItemDir = previousItemDir;
+      context.state.currentItemIndex = previousItemIndex;
+      context.state.currentWorkUnitName = previousWorkUnit;
       return;
     }
 
     if (iteration >= maxIterations) {
+      context.state.currentItemDir = previousItemDir;
+      context.state.currentItemIndex = previousItemIndex;
+      context.state.currentWorkUnitName = previousWorkUnit;
       throw new Error(
         `while_selector exceeded max_iterations (${maxIterations}) for selector "${step.selector}"`,
       );
@@ -880,6 +918,8 @@ async function runWhileSelectorStep(
 
     const itemDir = await ensureItemDirectory(context, iteration);
     context.state.currentItemDir = itemDir;
+    context.state.currentItemIndex = iteration;
+    context.state.currentWorkUnitName = undefined;
     logDetail(
       context.depth + 1,
       formatLoopLabel(iteration + 1, step.selector),
@@ -898,6 +938,8 @@ async function runWhileSelectorStep(
       });
       if (context.state.shouldHalt) {
         context.state.currentItemDir = previousItemDir;
+        context.state.currentItemIndex = previousItemIndex;
+        context.state.currentWorkUnitName = previousWorkUnit;
         return;
       }
     }
@@ -1224,7 +1266,7 @@ async function ensureItemDirectory(
   context: StepContext,
   index: number,
 ): Promise<string> {
-  const dirName = `item-${String(index + 1).padStart(3, '0')}`;
+  const dirName = `item-${formatItemSuffix(index)}`;
   const dirPath = path.join(context.state.runArtifactsDir, dirName);
   await fs.mkdir(dirPath, { recursive: true });
   return dirPath;
@@ -1244,6 +1286,98 @@ function generateArtifactPath(
   const baseDir = context.state.currentItemDir ?? context.state.runArtifactsDir;
   const fileName = `${prefix}-${Date.now().toString(36)}.${extension}`;
   return path.join(baseDir, fileName);
+}
+
+async function applyWorkUnitDirectoryName(
+  context: StepContext,
+  workUnitRaw?: string,
+): Promise<string | undefined> {
+  if (!workUnitRaw) {
+    return undefined;
+  }
+  const trimmed = workUnitRaw.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const currentDir = context.state.currentItemDir;
+  const currentIndex = context.state.currentItemIndex;
+  if (!currentDir || currentIndex === undefined) {
+    return undefined;
+  }
+  const sanitized = sanitizeWorkUnitName(trimmed);
+  if (!sanitized) {
+    return undefined;
+  }
+  const suffix = formatItemSuffix(currentIndex);
+  const desiredName = `${sanitized}_${suffix}`;
+  const parentDir = path.dirname(currentDir);
+  const targetDir = path.join(parentDir, desiredName);
+  if (path.basename(currentDir) === desiredName) {
+    context.state.currentWorkUnitName = sanitized;
+    return undefined;
+  }
+  await fs.mkdir(parentDir, { recursive: true });
+  await fs.rename(currentDir, targetDir);
+  context.state.currentItemDir = targetDir;
+  context.state.currentWorkUnitName = sanitized;
+  return targetDir;
+}
+
+function sanitizeWorkUnitName(raw: string): string {
+  const ascii = raw
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return ascii.slice(0, 80);
+}
+
+function formatItemSuffix(index: number): string {
+  return String(index + 1).padStart(3, '0');
+}
+
+async function handleRejectedItemArtifact(
+  context: StepContext,
+  reasonTextRaw?: string,
+): Promise<void> {
+  const currentDir = context.state.currentItemDir;
+  if (!currentDir) {
+    return;
+  }
+  const parentDir = path.dirname(currentDir);
+  const baseName = path.basename(currentDir);
+  const rejectedBaseName = appendRejectedSuffix(baseName);
+
+  let resolvedDir = currentDir;
+  if (rejectedBaseName !== baseName) {
+    resolvedDir = path.join(parentDir, rejectedBaseName);
+    await fs.mkdir(parentDir, { recursive: true });
+    if (!(await pathExists(resolvedDir))) {
+      await fs.rename(currentDir, resolvedDir);
+    }
+  }
+  context.state.currentItemDir = resolvedDir;
+
+  let normalizedReason = reasonTextRaw?.trim() ?? '';
+  if (normalizedReason.length === 0) {
+    normalizedReason = 'Rejected without recorded reason.';
+  }
+  const reasonPath = path.join(resolvedDir, 'rejection_reason.txt');
+  await fs.writeFile(reasonPath, normalizedReason, 'utf-8');
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function appendRejectedSuffix(name: string): string {
+  return name.endsWith('_Rejected') ? name : `${name}_Rejected`;
 }
 
 

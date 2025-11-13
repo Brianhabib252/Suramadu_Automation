@@ -101,9 +101,10 @@ function parseArgs(args: string[]): CliOptions {
 }
 
 function createRunId(): string {
-  const timestamp = nowJakarta('yyyyMMdd-HHmmss');
+  const datePart = nowJakarta('yyyyMMdd');
+  const timePart = nowJakarta('HHmmss');
   const random = Math.random().toString(36).slice(-4);
-  return `run-${timestamp}-${random}`;
+  return `${datePart}_Runs_${timePart}_${random}`;
 }
 
 /**

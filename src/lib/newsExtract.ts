@@ -25,6 +25,7 @@ export interface NewsExtractionResult {
   images: ExtractedImage[];
   eventDate?: string;
   uploadDate?: string;
+  workUnit?: string;
   signals: NewsSignals;
 }
 
@@ -35,6 +36,7 @@ type RawExtraction = {
   eventDate?: string;
   uploadDate?: string;
   paragraphs: string[];
+  workUnit?: string;
 };
 
 const IMAGE_HOST_ALLOWLIST = new Set(['i.ibb.co', 'imgbb.com']);
@@ -70,6 +72,22 @@ export async function extractNews(page: Page): Promise<NewsExtractionResult> {
         return null;
       }
     };
+
+    let workUnit: string | undefined;
+    const workUnitNode = selectByXPath('//*[@id="form-blog"]/div[1]/div/input');
+    if (workUnitNode instanceof HTMLInputElement) {
+      const candidate = workUnitNode.value?.trim();
+      if (candidate) {
+        workUnit = candidate;
+      }
+    } else if (workUnitNode) {
+      const candidate = workUnitNode.textContent
+        ?.replace(/\s+/g, ' ')
+        .trim();
+      if (candidate) {
+        workUnit = candidate;
+      }
+    }
 
     const descriptionContainer = selectByXPath(
       '//*[@id="form-blog"]/div[5]/div/div/div[2]',
@@ -237,7 +255,7 @@ export async function extractNews(page: Page): Promise<NewsExtractionResult> {
       }
     }
 
-    return { html, text, images, eventDate, uploadDate, paragraphs };
+    return { html, text, images, eventDate, uploadDate, paragraphs, workUnit };
   });
 
   const images = raw.images.map(normalizeImage);
@@ -286,6 +304,7 @@ export async function extractNews(page: Page): Promise<NewsExtractionResult> {
     images,
     eventDate: eventDateISO,
     uploadDate: uploadDateISO,
+    workUnit: raw.workUnit?.trim(),
     signals: {
       paragraphCount,
       minSentencesPerParagraph: minSentences,

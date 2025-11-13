@@ -82,6 +82,32 @@ Each invocation creates a timestamped run directory under `artifacts/runs/` that
   npx ts-node --project tsconfig.json scripts/showReason.ts <detail-page-url>
   ```
 
+## Automation Scheduling
+Follow these steps to run the Suramadu workflow automatically every day (default 22:00 based on your Windows device clock) without touching other scripts:
+
+1. **Test the runner script manually (optional but recommended):**
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\runSuramaduAutomation.ps1
+   ```
+   - Uses `examples/suramadu-auto-review.yaml` by default.
+   - Pass extra CLI flags with `-AdditionalArgs "--retries=2 --chrome"`.
+   - Logs land in `scheduler-logs/run-YYYYMMDD-HHmmss.log` so you can confirm the command works before scheduling it.
+
+2. **Install the daily schedule via Task Scheduler:**
+   ```powershell
+   # Run from an elevated PowerShell window (Run as Administrator)
+   powershell -ExecutionPolicy Bypass -File scripts\installDailySchedule.ps1 -DailyTime 22:00
+   ```
+   - Creates/updates a task named `SuramaduAutomationDaily` that calls the runner every day at 22:00 (local device time).
+   - Customize with:
+     - `-TaskName "SuramaduNightly"` &mdash; rename the scheduled task.
+     - `-Workflow "examples\suramadu-extract.yaml"` &mdash; point to another DSL file.
+     - `-AdditionalArgs "--headful --retries=2"` &mdash; forward flags to `npm run dev`.
+
+3. **Monitor or adjust the schedule later:**
+   - View past executions in `scheduler-logs/`.
+   - Use Windows Task Scheduler (`taskschd.msc`) to pause, edit, or delete the task without modifying any project files.
+
 ## Quality Checks
 ```bash
 npm test          # run Vitest unit tests (policy logic)

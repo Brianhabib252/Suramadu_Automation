@@ -28,7 +28,7 @@ steps:
     mode: clear
   - type: while_selector
     selector: '#default-datatable tbody tr:has(td:has-text("Belum Dikonfirmasi"))'
-    max_iterations: 50
+    max_iterations: 100
     steps:
       - type: type
         selector: '#default-datatable_filter input'
