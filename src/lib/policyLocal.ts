@@ -34,7 +34,7 @@ export interface PolicyResult {
 
 const RULE_IMAGE_HOSTING = '#I1 Foto Hosting';
 const RULE_BAHASA = '#T1 Bahasa/Jurnalistik';
-const RULE_CORE_INFO = '#T2 Unsur Kapan/Di mana/Siapa';
+const RULE_CORE_INFO = '#T2 Unsur Nama Orang, Waktu, Lokasi (Tatap Muka Maupun Daring)';
 const RULE_SENTENCE_COUNT = '#T3 Jumlah Kalimat';
 const RULE_FRESHNESS = '#T4 Up to date';
 const RULE_ROUTINE = '#T5 Informatif';

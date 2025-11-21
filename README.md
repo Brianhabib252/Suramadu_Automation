@@ -38,10 +38,16 @@ SURAMADU_PASSWORD=<portal password>
 GEMINI_API_KEY=<optional Google Gemini key>
 
 # Optional tuning
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_DEFAULT_MODEL=gemini-2.5-flash
+GEMINI_FALLBACK_MODELS=gemini-2.0-flash,gemini-2.0
+# GEMINI_MODEL=gemini-2.5-flash # legacy alias supported for compatibility
 GEMINI_POLICY_TIMEOUT_MS=120000
 ```
 Without `GEMINI_API_KEY` the automation falls back to the local policy engine only.
+
+`GEMINI_DEFAULT_MODEL` defines the primary Gemini endpoint while `GEMINI_FALLBACK_MODELS` (comma-separated)
+lists backup models that will be tried whenever the default responds with transient errors (e.g. 503/UNAVAILABLE),
+before the system gives up and uses the local policy verdict.
 
 ## Running the Automation
 ```bash

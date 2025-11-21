@@ -679,10 +679,24 @@ async function runAiEvaluateStep(
   const decisionLabel = result.ok ? 'APPROVE' : 'REJECT';
   const violationLabel =
     result.violations.length > 0 ? result.violations.join(', ') : 'none';
+  const modelTag =
+    result.source === 'gemini' && result.modelLabel
+      ? ` (${result.modelLabel})`
+      : '';
   logDetail(
     context.depth + 1,
-    `[AI:${result.source}] ${decisionLabel} | violations: ${violationLabel}`,
+    `[AI:${result.source}${modelTag}] ${decisionLabel} | violations: ${violationLabel}`,
   );
+  if (result.verification?.attempted) {
+    const outcomeLabel = result.verification.outcome;
+    const note = result.verification.notes
+      ? ` | ${result.verification.notes}`
+      : '';
+    logDetail(
+      context.depth + 1,
+      `[AI:verify] ${outcomeLabel}${note}`,
+    );
+  }
 }
 
 /**

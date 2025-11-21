@@ -120,7 +120,7 @@ describe('policyLocal', () => {
       }),
     );
 
-    expect(result.violations).toContain('#T2 Unsur Kapan/Di mana/Siapa');
+    expect(result.violations).toContain('#T2 Unsur Nama Orang, Waktu, Lokasi (Tatap Muka Maupun Daring)');
     expect(result.details.missingCoreInfo).toEqual(
       expect.arrayContaining(['Kapan', 'Di mana', 'Siapa']),
     );

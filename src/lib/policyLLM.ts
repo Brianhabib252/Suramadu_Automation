@@ -4,7 +4,11 @@
  * passes image validation and an API key is configured.
  */
 import { formatInTimeZone } from 'date-fns-tz';
-import { callGeminiPolicy, type GeminiPolicyPayload } from '../ai/geminiNewsPolicy';
+import {
+  callGeminiPolicy,
+  callGeminiVerification,
+  type GeminiPolicyPayload,
+} from '../ai/geminiNewsPolicy';
 import type { NewsExtractionResult } from './newsExtract';
 import {
   evaluateAgainstPolicy,
@@ -17,8 +21,8 @@ const VIOLATION_MESSAGES: Record<string, string> = {
     'Tambahkan foto yang diunggah melalui imgbb atau layanan hosting eksternal sebelum mengajukan berita.',
   '#T1 Bahasa/Jurnalistik':
     'Gunakan bahasa Indonesia baku dan narasi jurnalistik yang jelas.',
-  '#T2 Unsur Kapan/Di mana/Siapa':
-    'Lengkapi unsur kapan, di mana, dan siapa dalam pemberitaan.',
+  '#T2 Unsur Nama Orang, Waktu, Lokasi (Tatap Muka Maupun Daring)':
+    'Lengkapi unsur nama orang, waktu, dan lokasi (baik tatap muka maupun daring) dalam pemberitaan.',
   '#T3 Jumlah Kalimat':
     'Pastikan teks berisi minimal 12 kalimat informatif.',
   '#T4 Up to date':
@@ -36,11 +40,17 @@ const VIOLATION_MESSAGES: Record<string, string> = {
     'Gunakan bahasa Indonesia baku dan narasi jurnalistik yang jelas.',
   '#2 5W+1H':
     'Lengkapi unsur kapan, di mana, dan siapa dalam pemberitaan.',
+  '#T2 Unsur Kapan/Di mana/Siapa':
+    'Lengkapi unsur kapan, di mana, dan siapa dalam pemberitaan.',
+  '#T2 Unsur Nama Orang, Waktu, Lokasi (Langsung ditempat maupun Online)':
+    'Lengkapi unsur nama orang, waktu, dan lokasi (baik tatap muka maupun daring) dalam pemberitaan.',
   '#3 Paragraf':
     'Pastikan teks berisi minimal 12 kalimat informatif.',
 };
 
 const JAKARTA_TZ = 'Asia/Jakarta';
+const EVALUATION_ATTEMPT_BASE_DELAY_MS = 2_000;
+const EVALUATION_ATTEMPT_MAX_DELAY_MS = 30_000;
 const AI_CONFIRMATION_PHRASE = 'Dikonfirmasi oleh AI';
 const AI_CONFIRMATION_SUFFIX = ` (${AI_CONFIRMATION_PHRASE})`;
 const AI_CONFIRMATION_PHRASE_LOWER = AI_CONFIRMATION_PHRASE.toLowerCase();
@@ -80,13 +90,23 @@ export interface AiEvaluationResult {
   rejection_message_id?: string;
   rejection_message?: string;
   source: 'gemini' | 'local';
+  modelLabel?: string;
   details: PolicyDetails;
   rawGemini?: GeminiPolicyPayload;
   timeoutWarning?: boolean;
+  verification?: VerificationMetadata;
 }
 
 export interface AiEvaluateOptions {
   geminiCaller?: typeof callGeminiPolicy;
+  geminiVerificationCaller?: typeof callGeminiVerification;
+}
+
+export interface VerificationMetadata {
+  attempted: boolean;
+  outcome: 'confirmed' | 'overturned' | 'failed';
+  notes?: string;
+  raw?: GeminiPolicyPayload;
 }
 
 /**
@@ -130,6 +150,8 @@ export async function aiEvaluate(
 
   const apiKey = process.env.GEMINI_API_KEY;
   const geminiCaller = options.geminiCaller ?? callGeminiPolicy;
+  const geminiVerificationCaller =
+    options.geminiVerificationCaller ?? callGeminiVerification;
 
   if (!apiKey || !extraction.text.trim()) {
     return localResult;
@@ -141,37 +163,187 @@ export async function aiEvaluate(
     local.details.externalImageHosts?.length ?? 0,
   );
 
-  try {
-    const gemini = await geminiCaller({
-      apiKey,
-      text: extraction.text,
-      html: extraction.html,
-      signals: {
-        paragraphCount: extraction.signals.paragraphCount,
-        minSentencesPerParagraph: extraction.signals.minSentencesPerParagraph,
-        imageCount: extraction.signals.imageCount,
-        allowedHostCount: extraction.signals.allowedHostCount,
-        hostedImageCount,
-        sentenceCount: extraction.signals.sentenceCount,
-        eventDateISO: extraction.eventDate,
-        uploadDateISO: extraction.uploadDate,
-        evaluationDateISO,
-        evaluationDateLabel,
-      },
-    });
+  const evaluationAttempts = resolveEvaluationAttemptCount();
+  const requireGemini = shouldRequireGeminiDecision();
+  let lastGeminiError: unknown;
 
-    return buildResultFromGemini(
-      gemini,
-      local,
-    );
+  for (let attempt = 0; attempt < evaluationAttempts; attempt += 1) {
+    try {
+      const gemini = await geminiCaller({
+        apiKey,
+        text: extraction.text,
+        html: extraction.html,
+        signals: {
+          paragraphCount: extraction.signals.paragraphCount,
+          minSentencesPerParagraph:
+            extraction.signals.minSentencesPerParagraph,
+          imageCount: extraction.signals.imageCount,
+          allowedHostCount: extraction.signals.allowedHostCount,
+          hostedImageCount,
+          sentenceCount: extraction.signals.sentenceCount,
+          eventDateISO: extraction.eventDate,
+          uploadDateISO: extraction.uploadDate,
+          evaluationDateISO,
+          evaluationDateLabel,
+        },
+      });
+
+      let verificationMeta: VerificationMetadata | undefined;
+      let finalGemini: GeminiPolicyPayload = gemini;
+      const shouldVerify =
+        gemini.ok === false && (gemini.violations?.length ?? 0) > 0;
+
+      if (shouldVerify) {
+        try {
+          const verification = await geminiVerificationCaller({
+            apiKey,
+            text: extraction.text,
+            html: extraction.html,
+            signals: {
+              paragraphCount: extraction.signals.paragraphCount,
+              minSentencesPerParagraph:
+                extraction.signals.minSentencesPerParagraph,
+              imageCount: extraction.signals.imageCount,
+              allowedHostCount: extraction.signals.allowedHostCount,
+              hostedImageCount,
+              sentenceCount: extraction.signals.sentenceCount,
+              eventDateISO: extraction.eventDate,
+              uploadDateISO: extraction.uploadDate,
+              evaluationDateISO,
+              evaluationDateLabel,
+            },
+            initialViolations: gemini.violations ?? [],
+            initialReasons: gemini.reasons ?? [],
+          });
+          const overturned = verification.ok ?? false;
+          verificationMeta = {
+            attempted: true,
+            outcome: overturned ? 'overturned' : 'confirmed',
+            notes: overturned
+              ? 'Penolakan awal dibatalkan setelah verifikasi ulang.'
+              : 'Penolakan awal dikonfirmasi ulang oleh AI.',
+            raw: verification,
+          };
+          if (overturned) {
+            const confirmationReasons =
+              verification.reasons && verification.reasons.length > 0
+                ? verification.reasons
+                : [
+                    ensureAiConfirmationTag(
+                      'Verifikasi ulang AI menyatakan berita memenuhi kebijakan.',
+                    ),
+                  ];
+            finalGemini = {
+              ...finalGemini,
+              ok: true,
+              violations: [],
+              reasons: confirmationReasons,
+              rejection_message: undefined,
+              rejection_message_id: undefined,
+              confidence: Math.max(verification.confidence ?? 0.65, 0.65),
+            };
+          } else {
+            finalGemini = {
+              ...finalGemini,
+              violations:
+                verification.violations && verification.violations.length > 0
+                  ? verification.violations
+                  : finalGemini.violations,
+              reasons:
+                verification.reasons && verification.reasons.length > 0
+                  ? verification.reasons
+                  : finalGemini.reasons,
+              rejection_message:
+                verification.rejection_message ?? finalGemini.rejection_message,
+              rejection_message_id:
+                verification.rejection_message_id ??
+                finalGemini.rejection_message_id,
+              confidence: Math.min(
+                finalGemini.confidence ?? 0.5,
+                verification.confidence ?? 0.6,
+              ),
+            };
+          }
+        } catch (error) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            'Gemini verification failed, using initial rejection:',
+            error,
+          );
+          verificationMeta = {
+            attempted: true,
+            outcome: 'failed',
+            notes:
+              error instanceof Error
+                ? error.message
+                : 'Unknown verification error',
+          };
+        }
+      }
+
+      return buildResultFromGemini(
+        finalGemini,
+        local,
+        verificationMeta,
+      );
     } catch (error) {
+      lastGeminiError = error;
+      const hasMoreAttempts = attempt < evaluationAttempts - 1;
+      if (hasMoreAttempts) {
+        const waitMs = Math.min(
+          EVALUATION_ATTEMPT_BASE_DELAY_MS * 2 ** attempt,
+          EVALUATION_ATTEMPT_MAX_DELAY_MS,
+        );
+        await delay(waitMs);
+        continue;
+      }
+      const temporaryOutage = isTemporaryGeminiOutage(error);
+      if (requireGemini && !temporaryOutage) {
+        throw lastGeminiError instanceof Error
+          ? lastGeminiError
+          : new Error(
+              typeof lastGeminiError === 'string'
+                ? lastGeminiError
+                : 'Gemini evaluation failed.',
+            );
+      }
       // eslint-disable-next-line no-console
-      console.warn('Gemini evaluation failed, falling back to local policy:', error);
-      if (isTimeoutLike(error)) {
+      console.warn(
+        temporaryOutage
+          ? 'Gemini temporarily unavailable, falling back to local policy:'
+          : 'Gemini evaluation failed, falling back to local policy:',
+        error,
+      );
+      if (temporaryOutage || isTimeoutLike(error)) {
         localResult.timeoutWarning = true;
       }
       return localResult;
     }
+  }
+
+  return localResult;
+}
+
+function resolveEvaluationAttemptCount(): number {
+  const candidate = process.env.GEMINI_EVALUATION_ATTEMPTS;
+  if (candidate) {
+    const parsed = Number.parseInt(candidate, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return 1;
+}
+
+function shouldRequireGeminiDecision(): boolean {
+  const flag =
+    process.env.GEMINI_DISABLE_LOCAL_FALLBACK ??
+    process.env.GEMINI_REQUIRE_REMOTE_DECISION;
+  if (!flag) {
+    return false;
+  }
+  const normalized = flag.trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(normalized);
 }
 
 function buildResultFromLocal(
@@ -198,6 +370,7 @@ function buildResultFromLocal(
 function buildResultFromGemini(
   gemini: GeminiPolicyPayload,
   local: PolicyResult,
+  verification?: VerificationMetadata,
 ): AiEvaluationResult {
   const details = local.details;
   const originalViolations = gemini.violations ?? [];
@@ -205,7 +378,10 @@ function buildResultFromGemini(
     originalViolations,
     local,
   );
-  const ok = gemini.ok ?? harmonizedViolations.length === 0;
+  const ok =
+    harmonizedViolations.length === 0
+      ? true
+      : gemini.ok ?? false;
 
   const violationsChanged =
     harmonizedViolations.length !== originalViolations.length;
@@ -253,9 +429,11 @@ function buildResultFromGemini(
     rejection_message: rejectionMessage,
     rejection_message_id: rejectionId,
     source: 'gemini',
+    modelLabel: extractModelLabel(gemini),
     details,
     rawGemini: gemini,
     timeoutWarning: false,
+    verification,
   };
 }
 
@@ -269,10 +447,18 @@ function reconcileGeminiViolations(
   const localCodes = new Set(local.violations);
   const localHasFreshness =
     localCodes.has('#T4 Up to date') || localCodes.has('#6 Up to date');
+  const localHasSentenceCountIssue =
+    localCodes.has('#T3 Jumlah Kalimat') || localCodes.has('#3 Paragraf');
   return violations.filter((code) => {
     if (
       (code === '#T4 Up to date' || code === '#6 Up to date') &&
       !localHasFreshness
+    ) {
+      return false;
+    }
+    if (
+      (code === '#T3 Jumlah Kalimat' || code === '#3 Paragraf') &&
+      !localHasSentenceCountIssue
     ) {
       return false;
     }
@@ -290,7 +476,8 @@ function mapViolationsToReasons(
   return violations.map((violation) => {
     const base = VIOLATION_MESSAGES[violation] ?? violation;
     if (
-      (violation === '#T2 Unsur Kapan/Di mana/Siapa' ||
+      (violation === '#T2 Unsur Nama Orang, Waktu, Lokasi (Tatap Muka Maupun Daring)' ||
+        violation === '#T2 Unsur Kapan/Di mana/Siapa' ||
         violation === '#2 5W+1H') &&
       details.missingCoreInfo?.length
     ) {
@@ -389,3 +576,116 @@ function isTimeoutLike(error: unknown): boolean {
     message.includes('time out')
   );
 }
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function isTemporaryGeminiOutage(error: unknown): boolean {
+  if (!error) {
+    return false;
+  }
+  if (typeof error === 'string') {
+    const normalized = error.toLowerCase();
+    return (
+      normalized.includes('model is overloaded') ||
+      normalized.includes('service unavailable') ||
+      normalized.includes('temporarily unavailable') ||
+      normalized.includes('please try again later') ||
+      normalized.includes('try again later') ||
+      normalized.includes('too many requests')
+    );
+  }
+  if (typeof error !== 'object') {
+    return false;
+  }
+  const status = (error as { status?: number }).status;
+  const codeNumber =
+    typeof (error as { code?: number }).code === 'number'
+      ? (error as { code: number }).code
+      : undefined;
+  const codeString =
+    typeof (error as { code?: string }).code === 'string'
+      ? ((error as { code: string }).code ?? '').toUpperCase()
+      : undefined;
+  const message =
+    typeof (error as { message?: unknown }).message === 'string'
+      ? ((error as { message?: string }).message ?? '')
+      : '';
+  const nested = (error as {
+    error?: { code?: number | string; status?: string; message?: string };
+  }).error;
+
+  const numericCandidates: number[] = [];
+  const textualCandidates: string[] = [];
+  if (typeof status === 'number') {
+    numericCandidates.push(status);
+  }
+  if (typeof codeNumber === 'number') {
+    numericCandidates.push(codeNumber);
+  }
+  if (codeString) {
+    textualCandidates.push(codeString);
+  }
+  if (nested) {
+    if (typeof nested.code === 'number') {
+      numericCandidates.push(nested.code);
+    } else if (typeof nested.code === 'string') {
+      textualCandidates.push(nested.code.toUpperCase());
+    }
+    if (typeof nested.status === 'string') {
+      textualCandidates.push(nested.status.toUpperCase());
+    }
+  }
+
+  const normalizedMessage = message.toLowerCase();
+  const nestedMessage =
+    typeof nested?.message === 'string' ? nested.message.toLowerCase() : '';
+
+  if (numericCandidates.some((value) => value === 429 || value === 503)) {
+    return true;
+  }
+  if (
+    textualCandidates.some((value) =>
+      ['RESOURCE_EXHAUSTED', 'UNAVAILABLE', 'TOO_MANY_REQUESTS'].includes(
+        value,
+      ),
+    )
+  ) {
+    return true;
+  }
+  if (
+    normalizedMessage.includes('model is overloaded') ||
+    normalizedMessage.includes('service unavailable') ||
+    normalizedMessage.includes('temporarily unavailable') ||
+    normalizedMessage.includes('please try again later') ||
+    normalizedMessage.includes('try again later') ||
+    normalizedMessage.includes('too many requests')
+  ) {
+    return true;
+  }
+  if (
+    nestedMessage.includes('model is overloaded') ||
+    nestedMessage.includes('service unavailable') ||
+    nestedMessage.includes('temporarily unavailable') ||
+    nestedMessage.includes('please try again later') ||
+    nestedMessage.includes('try again later') ||
+    nestedMessage.includes('too many requests')
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function extractModelLabel(gemini: GeminiPolicyPayload): string | undefined {
+  const modelName = (gemini as { _model?: string })._model;
+  if (!modelName) {
+    return undefined;
+  }
+  const normalized = modelName.replace(/^models\//i, '');
+  const display = normalized.replace(/_/g, '-');
+  return display;
+}
+
