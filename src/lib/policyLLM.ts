@@ -7,6 +7,7 @@ import { formatInTimeZone } from 'date-fns-tz';
 import {
   callGeminiPolicy,
   callGeminiVerification,
+  resolveConfiguredGeminiApiKeys,
   type GeminiPolicyPayload,
 } from '../ai/geminiNewsPolicy';
 import type { NewsExtractionResult } from './newsExtract';
@@ -18,17 +19,17 @@ import {
 
 const VIOLATION_MESSAGES: Record<string, string> = {
   '#I1 Foto Hosting':
-    'Tambahkan foto yang diunggah melalui imgbb atau layanan hosting eksternal sebelum mengajukan berita.',
+    'Foto berita belum menggunakan tautan hosting eksternal yang dapat dibaca aplikasi.',
   '#T1 Bahasa/Jurnalistik':
-    'Gunakan bahasa Indonesia baku dan narasi jurnalistik yang jelas.',
+    'Bahasa Indonesia atau penyajian jurnalistik berita belum memenuhi standar.',
   '#T2 Unsur Nama Orang, Waktu, Lokasi (Tatap Muka Maupun Daring)':
-    'Lengkapi unsur nama orang, waktu, dan lokasi (baik tatap muka maupun daring) dalam pemberitaan.',
+    'Berita belum memuat unsur nama orang, waktu, dan lokasi kegiatan secara lengkap.',
   '#T3 Jumlah Kalimat':
-    'Pastikan teks berisi minimal 12 kalimat informatif.',
+    'Isi berita belum mencapai minimal 12 kalimat informatif.',
   '#T4 Up to date':
-    'Berita melewati batas waktu maksimal dua hari kerja dari tanggal kegiatan atau lebih dari satu hari kerja dari tanggal upload.',
+    'Tanggal berita tidak memenuhi batas ketepatan waktu yang ditentukan.',
   '#T5 Informatif':
-    'Perkaya isi berita agar tidak sekadar kegiatan rutin tanpa nilai berita.',
+    'Isi berita hanya menggambarkan kegiatan rutin dan belum menunjukkan nilai berita atau hasil penting.',
   // Legacy mappings for compatibility with existing data
   '#5 Hosting Foto':
     'Tambahkan foto yang diunggah melalui imgbb atau layanan hosting eksternal sebelum mengajukan berita.',
@@ -51,7 +52,8 @@ const VIOLATION_MESSAGES: Record<string, string> = {
 const JAKARTA_TZ = 'Asia/Jakarta';
 const EVALUATION_ATTEMPT_BASE_DELAY_MS = 2_000;
 const EVALUATION_ATTEMPT_MAX_DELAY_MS = 30_000;
-const AI_CONFIRMATION_PHRASE = 'Dikonfirmasi oleh AI';
+const DEFAULT_LOCAL_FALLBACK_DEADLINE_MS = 60_000;
+const AI_CONFIRMATION_PHRASE = 'Dikonfirmasi Otomatis';
 const AI_CONFIRMATION_SUFFIX = ` (${AI_CONFIRMATION_PHRASE})`;
 const AI_CONFIRMATION_PHRASE_LOWER = AI_CONFIRMATION_PHRASE.toLowerCase();
 
@@ -148,12 +150,12 @@ export async function aiEvaluate(
     return localResult;
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKeys = resolveConfiguredGeminiApiKeys();
   const geminiCaller = options.geminiCaller ?? callGeminiPolicy;
   const geminiVerificationCaller =
     options.geminiVerificationCaller ?? callGeminiVerification;
 
-  if (!apiKey || !extraction.text.trim()) {
+  if (apiKeys.length === 0 || !extraction.text.trim()) {
     return localResult;
   }
 
@@ -164,29 +166,32 @@ export async function aiEvaluate(
   );
 
   const evaluationAttempts = resolveEvaluationAttemptCount();
-  const requireGemini = shouldRequireGeminiDecision();
   let lastGeminiError: unknown;
 
   for (let attempt = 0; attempt < evaluationAttempts; attempt += 1) {
     try {
-      const gemini = await geminiCaller({
-        apiKey,
-        text: extraction.text,
-        html: extraction.html,
-        signals: {
-          paragraphCount: extraction.signals.paragraphCount,
-          minSentencesPerParagraph:
-            extraction.signals.minSentencesPerParagraph,
-          imageCount: extraction.signals.imageCount,
-          allowedHostCount: extraction.signals.allowedHostCount,
-          hostedImageCount,
-          sentenceCount: extraction.signals.sentenceCount,
-          eventDateISO: extraction.eventDate,
-          uploadDateISO: extraction.uploadDate,
-          evaluationDateISO,
-          evaluationDateLabel,
-        },
-      });
+      const gemini = await withLocalFallbackDeadline((abortSignal) =>
+        geminiCaller({
+          apiKey: apiKeys[0],
+          apiKeys,
+          text: extraction.text,
+          html: extraction.html,
+          signals: {
+            paragraphCount: extraction.signals.paragraphCount,
+            minSentencesPerParagraph:
+              extraction.signals.minSentencesPerParagraph,
+            imageCount: extraction.signals.imageCount,
+            allowedHostCount: extraction.signals.allowedHostCount,
+            hostedImageCount,
+            sentenceCount: extraction.signals.sentenceCount,
+            eventDateISO: extraction.eventDate,
+            uploadDateISO: extraction.uploadDate,
+            evaluationDateISO,
+            evaluationDateLabel,
+          },
+          abortSignal,
+        }),
+      );
 
       let verificationMeta: VerificationMetadata | undefined;
       let finalGemini: GeminiPolicyPayload = gemini;
@@ -195,26 +200,30 @@ export async function aiEvaluate(
 
       if (shouldVerify) {
         try {
-          const verification = await geminiVerificationCaller({
-            apiKey,
-            text: extraction.text,
-            html: extraction.html,
-            signals: {
-              paragraphCount: extraction.signals.paragraphCount,
-              minSentencesPerParagraph:
-                extraction.signals.minSentencesPerParagraph,
-              imageCount: extraction.signals.imageCount,
-              allowedHostCount: extraction.signals.allowedHostCount,
-              hostedImageCount,
-              sentenceCount: extraction.signals.sentenceCount,
-              eventDateISO: extraction.eventDate,
-              uploadDateISO: extraction.uploadDate,
-              evaluationDateISO,
-              evaluationDateLabel,
-            },
-            initialViolations: gemini.violations ?? [],
-            initialReasons: gemini.reasons ?? [],
-          });
+          const verification = await withLocalFallbackDeadline((abortSignal) =>
+            geminiVerificationCaller({
+              apiKey: apiKeys[0],
+              apiKeys,
+              text: extraction.text,
+              html: extraction.html,
+              signals: {
+                paragraphCount: extraction.signals.paragraphCount,
+                minSentencesPerParagraph:
+                  extraction.signals.minSentencesPerParagraph,
+                imageCount: extraction.signals.imageCount,
+                allowedHostCount: extraction.signals.allowedHostCount,
+                hostedImageCount,
+                sentenceCount: extraction.signals.sentenceCount,
+                eventDateISO: extraction.eventDate,
+                uploadDateISO: extraction.uploadDate,
+                evaluationDateISO,
+                evaluationDateLabel,
+              },
+              initialViolations: gemini.violations ?? [],
+              initialReasons: gemini.reasons ?? [],
+              abortSignal,
+            }),
+          );
           const overturned = verification.ok ?? false;
           verificationMeta = {
             attempted: true,
@@ -229,10 +238,10 @@ export async function aiEvaluate(
               verification.reasons && verification.reasons.length > 0
                 ? verification.reasons
                 : [
-                    ensureAiConfirmationTag(
-                      'Verifikasi ulang AI menyatakan berita memenuhi kebijakan.',
-                    ),
-                  ];
+                  ensureAiConfirmationTag(
+                    'Verifikasi ulang AI menyatakan berita memenuhi kebijakan.',
+                  ),
+                ];
             finalGemini = {
               ...finalGemini,
               ok: true,
@@ -298,15 +307,6 @@ export async function aiEvaluate(
         continue;
       }
       const temporaryOutage = isTemporaryGeminiOutage(error);
-      if (requireGemini && !temporaryOutage) {
-        throw lastGeminiError instanceof Error
-          ? lastGeminiError
-          : new Error(
-              typeof lastGeminiError === 'string'
-                ? lastGeminiError
-                : 'Gemini evaluation failed.',
-            );
-      }
       // eslint-disable-next-line no-console
       console.warn(
         temporaryOutage
@@ -335,15 +335,34 @@ function resolveEvaluationAttemptCount(): number {
   return 1;
 }
 
-function shouldRequireGeminiDecision(): boolean {
-  const flag =
-    process.env.GEMINI_DISABLE_LOCAL_FALLBACK ??
-    process.env.GEMINI_REQUIRE_REMOTE_DECISION;
-  if (!flag) {
-    return false;
+function resolveLocalFallbackDeadline(): number {
+  const candidate = process.env.GEMINI_LOCAL_FALLBACK_AFTER_MS;
+  if (candidate) {
+    const parsed = Number.parseInt(candidate, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
   }
-  const normalized = flag.trim().toLowerCase();
-  return ['1', 'true', 'yes', 'on'].includes(normalized);
+  return DEFAULT_LOCAL_FALLBACK_DEADLINE_MS;
+}
+
+async function withLocalFallbackDeadline<T>(
+  task: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const timeoutMs = resolveLocalFallbackDeadline();
+  const controller = new AbortController();
+  const timeoutRef = setTimeout(() => {
+    controller.abort(
+      new Error(
+        `Gemini timed out after ${timeoutMs}ms; switching to local policy.`,
+      ),
+    );
+  }, timeoutMs);
+  try {
+    return await task(controller.signal);
+  } finally {
+    clearTimeout(timeoutRef);
+  }
 }
 
 function buildResultFromLocal(
@@ -358,7 +377,7 @@ function buildResultFromLocal(
     ok,
     violations,
     reasons,
-    confidence: ok ? 0.6 : 0.4,
+    confidence: ok ? 0.82 : 0.78,
     rejection_message: rejectionMessage,
     rejection_message_id: violations[0] ? slugViolation(violations[0]) : undefined,
     source: 'local',
@@ -416,10 +435,10 @@ function buildResultFromGemini(
     ok
       ? undefined
       : !violationsChanged && gemini.rejection_message_id
-      ? gemini.rejection_message_id
-      : primaryViolation
-      ? slugViolation(primaryViolation)
-      : undefined;
+        ? gemini.rejection_message_id
+        : primaryViolation
+          ? slugViolation(primaryViolation)
+          : undefined;
 
   return {
     ok,
@@ -476,6 +495,15 @@ function mapViolationsToReasons(
   return violations.map((violation) => {
     const base = VIOLATION_MESSAGES[violation] ?? violation;
     if (
+      (violation === '#T1 Bahasa/Jurnalistik' ||
+        violation === '#1 Bahasa/Jurnalistik') &&
+      details.journalismIssues?.length
+    ) {
+      return ensureAiConfirmationTag(
+        `${base} Temuan: ${details.journalismIssues.join(' ')}`,
+      );
+    }
+    if (
       (violation === '#T2 Unsur Nama Orang, Waktu, Lokasi (Tatap Muka Maupun Daring)' ||
         violation === '#T2 Unsur Kapan/Di mana/Siapa' ||
         violation === '#2 5W+1H') &&
@@ -497,6 +525,22 @@ function mapViolationsToReasons(
     ) {
       const message = `${base} Saat ini baru ${details.sentenceCount} kalimat.`;
       return ensureAiConfirmationTag(message);
+    }
+    if (
+      (violation === '#T4 Up to date' || violation === '#6 Up to date') &&
+      details.freshnessIssues?.length
+    ) {
+      return ensureAiConfirmationTag(
+        `${base} ${details.freshnessIssues.join(' ')}`,
+      );
+    }
+    if (
+      (violation === '#T5 Informatif' || violation === '#7 Informatif') &&
+      details.routineKeywordsHit?.length
+    ) {
+      return ensureAiConfirmationTag(
+        `${base} Indikasi kegiatan rutin: ${details.routineKeywordsHit.join(', ')}.`,
+      );
     }
     return ensureAiConfirmationTag(base);
   });
@@ -688,4 +732,3 @@ function extractModelLabel(gemini: GeminiPolicyPayload): string | undefined {
   const display = normalized.replace(/_/g, '-');
   return display;
 }
-

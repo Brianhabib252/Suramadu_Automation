@@ -4,6 +4,7 @@
  * local policy engine and the Gemini-powered review.
  */
 import type { Page } from 'playwright';
+import { splitInformativeSentences } from './policyLocal';
 
 export interface ExtractedImage {
   src: string;
@@ -287,7 +288,9 @@ export async function extractNews(page: Page): Promise<NewsExtractionResult> {
 
   const paragraphs = raw.paragraphs.map((p) => p.trim()).filter(Boolean);
   const paragraphCount = paragraphs.length;
-  const sentencesPerParagraph = paragraphs.map(countSentences);
+  const sentencesPerParagraph = paragraphs.map(
+    (paragraph) => splitInformativeSentences(paragraph).length,
+  );
   const minSentences =
     paragraphCount > 0 ? Math.min(...sentencesPerParagraph) : 0;
   const sentenceCount = sentencesPerParagraph.reduce(

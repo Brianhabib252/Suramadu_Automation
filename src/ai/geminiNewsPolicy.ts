@@ -25,7 +25,8 @@ const geminiResponseSchema = z.object({
 export type GeminiPolicyPayload = z.infer<typeof geminiResponseSchema>;
 
 export interface GeminiPolicyInput {
-  apiKey: string;
+  apiKey?: string;
+  apiKeys?: string[];
   text: string;
   html?: string;
   signals: {
@@ -54,14 +55,29 @@ export interface GeminiVerificationInput extends GeminiPolicyInput {
   initialReasons: string[];
 }
 
+const LEGACY_MODEL_ALIASES: Record<string, string> = {
+  'gemini-3.0-flash-lite': 'gemini-2.5-flash-lite',
+  'gemini-3.0-flash': 'gemini-2.5-flash',
+};
+const BUILT_IN_MODEL_CANDIDATES = [
+  'gemini-2.5-flash-lite',
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+] as const;
 const DEFAULT_MODEL =
   process.env.GEMINI_DEFAULT_MODEL ??
   process.env.GEMINI_MODEL ??
-  'gemini-2.5-flash';
+  BUILT_IN_MODEL_CANDIDATES[0];
 const DEFAULT_TIMEOUT_MS = resolveDefaultTimeout();
 const DEFAULT_RETRY_COUNT = resolveDefaultRetryCount();
 const BASE_RETRY_DELAY_MS = 500;
 const MAX_RETRY_DELAY_MS = 10_000;
+const GEMINI_API_KEY_ENV_NAMES = [
+  'GEMINI_API_KEY_1',
+  'GEMINI_API_KEY_2',
+  'GEMINI_API_KEY_3',
+  'GEMINI_API_KEY',
+] as const;
 
 const IMAGE_RULE_LABEL = '#I1 Foto Hosting';
 const IMAGE_RULE_REASON =
@@ -117,79 +133,96 @@ async function requestGeminiResponse(
   input: GeminiPolicyInput,
   options: GeminiPolicyCallOptions,
 ): Promise<GeminiPolicyPayload> {
-  const { apiKey, abortSignal } = input;
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is required');
+  const { abortSignal } = input;
+  const apiKeyCandidates = resolveInputApiKeys(input);
+  if (apiKeyCandidates.length === 0) {
+    throw new Error(
+      'At least one Gemini API key is required. Set GEMINI_API_KEY or GEMINI_API_KEY_1..3.',
+    );
   }
-  const client = new GoogleGenAI({ apiKey });
   const retries = normalizeRetryCount(options.retries);
 
   let lastError: unknown;
   const modelCandidates = resolveModelCandidates(options.model);
 
-  for (const modelName of modelCandidates) {
-    const normalizedModel = normalizeModelName(modelName);
-    let attempt = 0;
-    while (attempt <= retries) {
-      const controller = new AbortController();
-      const signal = mergeAbortSignals(abortSignal, controller.signal);
-      try {
-        const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-        const result = await withTimeout(
-          attachAbortSignal(
-            client.models.generateContent({
-              model: normalizedModel,
-              contents: [
-                {
-                  role: 'user',
-                  parts: [{ text: prompt }],
+  for (let keyIndex = 0; keyIndex < apiKeyCandidates.length; keyIndex += 1) {
+    const apiKey = apiKeyCandidates[keyIndex];
+    const client = new GoogleGenAI({ apiKey });
+    const hasMoreApiKeys = keyIndex < apiKeyCandidates.length - 1;
+    let rotateToNextApiKey = false;
+
+    for (const modelName of modelCandidates) {
+      const normalizedModel = normalizeModelName(modelName);
+      let attempt = 0;
+      while (attempt <= retries) {
+        const controller = new AbortController();
+        const signal = mergeAbortSignals(abortSignal, controller.signal);
+        try {
+          const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+          const result = await withTimeout(
+            attachAbortSignal(
+              client.models.generateContent({
+                model: normalizedModel,
+                contents: [
+                  {
+                    role: 'user',
+                    parts: [{ text: prompt }],
+                  },
+                ],
+                config: {
+                  responseMimeType: 'application/json',
                 },
-              ],
-              config: {
-                responseMimeType: 'application/json',
-              },
-            }),
-            signal,
-          ),
-          timeout,
-          controller,
-        );
+              }),
+              signal,
+            ),
+            timeout,
+            controller,
+          );
 
-        const responseText = extractTextFromResponse(result);
-        if (!responseText) {
-          throw new Error('Gemini returned empty response');
-        }
+          const responseText = extractTextFromResponse(result);
+          if (!responseText) {
+            throw new Error('Gemini returned empty response');
+          }
 
-        const parsed = geminiResponseSchema.parse(JSON.parse(responseText));
-        (parsed as GeminiPolicyPayload & { _model?: string })._model =
-          normalizedModel;
-        parsed.violations = parsed.violations.map((v) => v.trim()).filter(Boolean);
-        parsed.reasons = parsed.reasons.map((r) => r.trim()).filter(Boolean);
-        return parsed;
-      } catch (error) {
-        lastError = error;
-        if (isModelNotFoundError(error)) {
-          break;
+          const parsed = geminiResponseSchema.parse(JSON.parse(responseText));
+          (parsed as GeminiPolicyPayload & { _model?: string })._model =
+            normalizedModel;
+          parsed.violations = parsed.violations.map((v) => v.trim()).filter(Boolean);
+          parsed.reasons = parsed.reasons.map((r) => r.trim()).filter(Boolean);
+          return parsed;
+        } catch (error) {
+          lastError = error;
+          if (hasMoreApiKeys && shouldRotateToNextApiKey(error)) {
+            rotateToNextApiKey = true;
+            break;
+          }
+          if (isModelNotFoundError(error)) {
+            break;
+          }
+          const retryable = isRetryableError(error);
+          const hasMoreAttempts = attempt < retries;
+          if (!retryable) {
+            throw error;
+          }
+          if (!hasMoreAttempts) {
+            // Exhausted retries for this model; move to the next candidate.
+            break;
+          }
+          const backoffMs = Math.min(
+            BASE_RETRY_DELAY_MS * 2 ** attempt,
+            MAX_RETRY_DELAY_MS,
+          );
+          const jitter = Math.floor(Math.random() * 250);
+          await delay(backoffMs + jitter);
+        } finally {
+          controller.abort();
         }
-        const retryable = isRetryableError(error);
-        const hasMoreAttempts = attempt < retries;
-        if (!retryable) {
-          throw error;
-        }
-        if (!hasMoreAttempts) {
-          // Exhausted retries for this model; move to the next candidate.
-          break;
-        }
-        const backoffMs = Math.min(
-          BASE_RETRY_DELAY_MS * 2 ** attempt,
-          MAX_RETRY_DELAY_MS,
-        );
-        const jitter = Math.floor(Math.random() * 250);
-        await delay(backoffMs + jitter);
-      } finally {
-        controller.abort();
+        attempt += 1;
       }
-      attempt += 1;
+
+      if (rotateToNextApiKey) {
+        break;
+      }
     }
   }
 
@@ -501,8 +534,8 @@ function isRetryableError(error: unknown): boolean {
   const nestedMessage =
     typeof (asObject?.error as { message?: unknown } | undefined)?.message === 'string'
       ? (
-          (asObject?.error as { message?: string }).message ?? ''
-        ).toLowerCase()
+        (asObject?.error as { message?: string }).message ?? ''
+      ).toLowerCase()
       : '';
 
   const messageHints = (value: string): boolean =>
@@ -607,7 +640,10 @@ function extractTextFromResponse(result: unknown): string | undefined {
 }
 
 function normalizeModelName(model: string): string {
-  return model.startsWith('models/') ? model.slice('models/'.length) : model;
+  const normalized = model.startsWith('models/')
+    ? model.slice('models/'.length)
+    : model;
+  return LEGACY_MODEL_ALIASES[normalized] ?? normalized;
 }
 
 export function resolveModelCandidates(explicit?: string): string[] {
@@ -618,10 +654,7 @@ export function resolveModelCandidates(explicit?: string): string[] {
     process.env.GEMINI_MODEL,
     ...fallbackModels,
     DEFAULT_MODEL,
-    'gemini-2.5-flash',
-    'gemini-2.5-pro',
-    'gemini-2.0-flash',
-    'gemini-2.0',
+    ...BUILT_IN_MODEL_CANDIDATES,
   ];
   const seen = new Set<string>();
   const result: string[] = [];
@@ -629,7 +662,7 @@ export function resolveModelCandidates(explicit?: string): string[] {
     if (!modelName || typeof modelName !== 'string') {
       continue;
     }
-    const normalized = modelName.trim();
+    const normalized = normalizeModelName(modelName.trim());
     if (!normalized || seen.has(normalized)) {
       continue;
     }
@@ -649,6 +682,136 @@ function parseModelList(value: string | undefined): string[] {
     .filter((entry) => entry.length > 0);
 }
 
+export function resolveConfiguredGeminiApiKeys(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  return normalizeApiKeys(
+    GEMINI_API_KEY_ENV_NAMES.map((envName) => env[envName]),
+  );
+}
+
+function resolveInputApiKeys(input: GeminiPolicyInput): string[] {
+  return normalizeApiKeys([input.apiKey, ...(input.apiKeys ?? [])]);
+}
+
+function normalizeApiKeys(values: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (!value || typeof value !== 'string') {
+      continue;
+    }
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+function shouldRotateToNextApiKey(error: unknown): boolean {
+  if (!error) {
+    return false;
+  }
+  const asObject = typeof error === 'object' ? (error as Record<string, unknown>) : undefined;
+  const numericStatuses: number[] = [];
+  const stringStatuses: string[] = [];
+  const stringCodes: string[] = [];
+  const numericCodes: number[] = [];
+
+  const pushStatus = (value: unknown): void => {
+    if (typeof value === 'number') {
+      numericStatuses.push(value);
+    } else if (typeof value === 'string') {
+      stringStatuses.push(value.toUpperCase());
+    }
+  };
+  const pushCode = (value: unknown): void => {
+    if (typeof value === 'number') {
+      numericCodes.push(value);
+    } else if (typeof value === 'string') {
+      stringCodes.push(value.toUpperCase());
+    }
+  };
+
+  if (asObject) {
+    pushStatus(asObject.status);
+    pushCode(asObject.code);
+    const nested = asObject.error as
+      | { status?: unknown; code?: unknown; message?: unknown }
+      | undefined;
+    if (nested) {
+      pushStatus(nested.status);
+      pushCode(nested.code);
+    }
+  }
+
+  const normalizedMessage =
+    typeof (error as { message?: unknown }).message === 'string'
+      ? ((error as { message?: string }).message ?? '').toLowerCase()
+      : '';
+  const nestedMessage =
+    typeof (asObject?.error as { message?: unknown } | undefined)?.message === 'string'
+      ? (
+        (asObject?.error as { message?: string }).message ?? ''
+      ).toLowerCase()
+      : '';
+
+  const keyRotationMessageHints = (value: string): boolean =>
+    value.includes('quota') ||
+    value.includes('resource exhausted') ||
+    value.includes('daily limit') ||
+    value.includes('rate limit') ||
+    value.includes('too many requests') ||
+    value.includes('api key') ||
+    value.includes('permission denied') ||
+    value.includes('access denied') ||
+    value.includes('authentication') ||
+    value.includes('unauthenticated') ||
+    value.includes('invalid key') ||
+    value.includes('expired');
+
+  if (numericStatuses.some((status) => [401, 403, 429].includes(status))) {
+    return true;
+  }
+  if (numericCodes.some((code) => [401, 403, 429].includes(code))) {
+    return true;
+  }
+  if (
+    stringStatuses.some((status) =>
+      [
+        'RESOURCE_EXHAUSTED',
+        'TOO_MANY_REQUESTS',
+        'PERMISSION_DENIED',
+        'UNAUTHENTICATED',
+      ].includes(status),
+    )
+  ) {
+    return true;
+  }
+  if (
+    stringCodes.some((code) =>
+      [
+        'RESOURCE_EXHAUSTED',
+        'TOO_MANY_REQUESTS',
+        'PERMISSION_DENIED',
+        'UNAUTHENTICATED',
+      ].includes(code),
+    )
+  ) {
+    return true;
+  }
+  if (
+    keyRotationMessageHints(normalizedMessage) ||
+    keyRotationMessageHints(nestedMessage)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function attachAbortSignal<T>(
   promise: Promise<T>,
   signal: AbortSignal,
@@ -656,7 +819,7 @@ function attachAbortSignal<T>(
   if (signal.aborted) {
     return Promise.reject(
       signal.reason ??
-        new DOMException('Aborted', 'AbortError'),
+      new DOMException('Aborted', 'AbortError'),
     );
   }
 

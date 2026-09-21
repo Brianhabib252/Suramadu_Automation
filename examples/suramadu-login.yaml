@@ -12,6 +12,6 @@ steps:
     selector: form#form-login input[name="pass"]
     value: '{{env.SURAMADU_PASSWORD}}'
   - type: click
-    selector: 'form#form-login button[type="submit"]:has-text("Sign In")'
+    selector: 'form#form-login button[type="submit"]'
   - type: wait_for
     state: networkidle

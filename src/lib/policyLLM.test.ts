@@ -27,11 +27,17 @@ const baseExtraction: Pick<
 };
 
 const originalEnv = process.env.GEMINI_API_KEY;
+const originalEnv1 = process.env.GEMINI_API_KEY_1;
+const originalEnv2 = process.env.GEMINI_API_KEY_2;
+const originalEnv3 = process.env.GEMINI_API_KEY_3;
 const originalDisableFallback = process.env.GEMINI_DISABLE_LOCAL_FALLBACK;
 
 describe('policyLLM.aiEvaluate', () => {
   beforeEach(() => {
     delete process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY_1;
+    delete process.env.GEMINI_API_KEY_2;
+    delete process.env.GEMINI_API_KEY_3;
     delete process.env.GEMINI_DISABLE_LOCAL_FALLBACK;
   });
 
@@ -40,6 +46,21 @@ describe('policyLLM.aiEvaluate', () => {
       delete process.env.GEMINI_API_KEY;
     } else {
       process.env.GEMINI_API_KEY = originalEnv;
+    }
+    if (originalEnv1 === undefined) {
+      delete process.env.GEMINI_API_KEY_1;
+    } else {
+      process.env.GEMINI_API_KEY_1 = originalEnv1;
+    }
+    if (originalEnv2 === undefined) {
+      delete process.env.GEMINI_API_KEY_2;
+    } else {
+      process.env.GEMINI_API_KEY_2 = originalEnv2;
+    }
+    if (originalEnv3 === undefined) {
+      delete process.env.GEMINI_API_KEY_3;
+    } else {
+      process.env.GEMINI_API_KEY_3 = originalEnv3;
     }
     if (originalDisableFallback === undefined) {
       delete process.env.GEMINI_DISABLE_LOCAL_FALLBACK;
@@ -56,6 +77,40 @@ describe('policyLLM.aiEvaluate', () => {
 
     expect(result.source).toBe('local');
     expect(result.violations.length).toBeGreaterThanOrEqual(0);
+  });
+
+  it('returns a complete and specific local rejection message', async () => {
+    const extraction = {
+      ...baseExtraction,
+      text:
+        'Pada hari Senin pegawai mengikuti apel pagi di kantor. Kegiatan rutin berjalan tertib. Pegawai kemudian kembali bekerja.',
+      eventDate: undefined,
+      uploadDate: undefined,
+      signals: {
+        ...baseExtraction.signals,
+        sentenceCount: 3,
+      },
+    };
+
+    const result = await aiEvaluate({
+      extraction,
+      now: new Date('2024-10-11T00:00:00.000Z'),
+    });
+
+    expect(result.source).toBe('local');
+    expect(result.ok).toBe(false);
+    expect(result.violations).toEqual(
+      expect.arrayContaining([
+        '#T2 Unsur Nama Orang, Waktu, Lokasi (Tatap Muka Maupun Daring)',
+        '#T3 Jumlah Kalimat',
+        '#T4 Up to date',
+        '#T5 Informatif',
+      ]),
+    );
+    expect(result.rejection_message).toContain('Saat ini baru 3 kalimat');
+    expect(result.rejection_message).toContain('Tanggal kegiatan tidak ditemukan');
+    expect(result.rejection_message).toContain('apel pagi');
+    expect(result.rejection_message).toContain('Dikonfirmasi Otomatis');
   });
 
   it('uses Gemini output when API key is available', async () => {
@@ -92,13 +147,43 @@ describe('policyLLM.aiEvaluate', () => {
     expect(result.violations).toEqual(['#T1 Bahasa/Jurnalistik']);
     expect(result.rejection_message_id).toBe('perbaiki_bahasa');
     expect(result.reasons).toContainEqual(
-      expect.stringContaining('Dikonfirmasi oleh AI'),
+      expect.stringContaining('Dikonfirmasi Otomatis'),
     );
     expect(result.rejection_message).toBeDefined();
     expect(result.rejection_message?.toLowerCase()).toContain(
-      'dikonfirmasi oleh ai',
+      'dikonfirmasi otomatis',
     );
     expect(result.verification?.outcome).toBe('confirmed');
+  });
+
+  it('passes configured API keys in fallback order to Gemini callers', async () => {
+    process.env.GEMINI_API_KEY_1 = 'key-one';
+    process.env.GEMINI_API_KEY_2 = 'key-two';
+    process.env.GEMINI_API_KEY_3 = 'key-three';
+    const stub = vi.fn().mockResolvedValue({
+      ok: true,
+      violations: [],
+      reasons: ['Berita lolos pemeriksaan AI.'],
+      confidence: 0.9,
+      rejection_message_id: undefined,
+      rejection_message: undefined,
+    } satisfies GeminiPolicyPayload);
+
+    const result = await aiEvaluate(
+      {
+        extraction: baseExtraction,
+        now: new Date('2024-10-11T00:00:00.000Z'),
+      },
+      { geminiCaller: stub },
+    );
+
+    expect(stub).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: 'key-one',
+        apiKeys: ['key-one', 'key-two', 'key-three'],
+      }),
+    );
+    expect(result.source).toBe('gemini');
   });
 
   it('overturns rejection when verification approves the article', async () => {
@@ -237,5 +322,28 @@ describe('policyLLM.aiEvaluate', () => {
     expect(stub).toHaveBeenCalledOnce();
     expect(result.source).toBe('local');
     expect(result.timeoutWarning).toBe(true);
+  });
+
+  it('keeps using local policy for non-temporary Gemini failures', async () => {
+    process.env.GEMINI_API_KEY = 'invalid-key';
+    process.env.GEMINI_DISABLE_LOCAL_FALLBACK = 'true';
+    const stub = vi.fn().mockRejectedValue(
+      Object.assign(new Error('API key is invalid.'), {
+        status: 401,
+        code: 'UNAUTHENTICATED',
+      }),
+    );
+
+    const result = await aiEvaluate(
+      {
+        extraction: baseExtraction,
+        now: new Date('2024-10-11T00:00:00.000Z'),
+      },
+      { geminiCaller: stub },
+    );
+
+    expect(stub).toHaveBeenCalledOnce();
+    expect(result.source).toBe('local');
+    expect(result.ok).toBe(false);
   });
 });

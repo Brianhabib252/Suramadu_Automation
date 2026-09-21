@@ -296,7 +296,7 @@ Automate review/confirmation of news items on **suramadu.pta-surabaya.go.id**. T
 - Bind to the Task DSL as `{{secrets.SURAMADU_USERNAME}}` and `{{secrets.SURAMADU_PASSWORD}}`.
 
 ### 19.2.1 Login Page Elements & Steps (/auth/masuk)
-**Form Markup (provided):** `form#form-login` with fields `input[name="nip"]`, `input[name="pass"]`, and `button[type="submit"]` labeled **Sign In**.
+**Form Markup (provided):** `form#form-login` with fields `input[name="nip"]`, `input[name="pass"]`, and `button[type="submit"]` for the login action.
 
 **Playwright snippet:**
 ```ts
@@ -305,7 +305,7 @@ await page.locator('form#form-login input[name="nip"]').fill(process.env.SURAMAD
 await page.locator('form#form-login input[name="pass"]').fill(process.env.SURAMADU_PASSWORD!);
 await Promise.all([
   page.waitForLoadState('networkidle'),
-  page.locator('form#form-login button[type="submit"]:has-text("Sign In")').click(),
+  page.locator('form#form-login button[type="submit"]').click(),
 ]);
 // Optional: verify login success or handle error
 const loginError = page.locator('.alert, .invalid-feedback, .text-danger');
@@ -789,7 +789,7 @@ setup:
   - navigate: "https://suramadu.pta-surabaya.go.id/auth/masuk"
   - type: { selector: "form#form-login input[name='nip']", value: "{{secrets.SURAMADU_USERNAME}}" }
   - type: { selector: "form#form-login input[name='pass']", value: "{{secrets.SURAMADU_PASSWORD}}" }
-  - click: { selector: "form#form-login button[type='submit']:has-text(\"Sign In\")" }
+  - click: { selector: "form#form-login button[type='submit']" }
   - wait_for: { state: "networkidle" }
 loop:
   while: { url: "https://suramadu.pta-surabaya.go.id/superuser/pengadilan_berita" }
@@ -887,7 +887,7 @@ Create /examples/suramadu-login.yaml to log in to https://suramadu.pta-surabaya.
 Selectors:
 - form#form-login input[name="nip"]
 - form#form-login input[name="pass"]
-- form#form-login button[type="submit"]:has-text("Sign In")
+- form#form-login button[type="submit"]
 Use env: SURAMADU_USERNAME, SURAMADU_PASSWORD.
 Add wait_for: { state: "networkidle" } after submit.
 Acceptance: fields filled and submitted without errors.

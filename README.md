@@ -35,7 +35,10 @@ Create a `.env` in the repo root (see `.env` template in the project) and provid
 ```
 SURAMADU_USERNAME=<portal username>
 SURAMADU_PASSWORD=<portal password>
-GEMINI_API_KEY=<optional Google Gemini key>
+GEMINI_API_KEY_1=<primary optional Google Gemini key>
+GEMINI_API_KEY_2=<secondary Gemini key fallback>
+GEMINI_API_KEY_3=<third Gemini key fallback>
+# GEMINI_API_KEY=<legacy single-key alias, still supported>
 
 # Optional tuning
 GEMINI_DEFAULT_MODEL=gemini-2.5-flash
@@ -43,11 +46,14 @@ GEMINI_FALLBACK_MODELS=gemini-2.0-flash,gemini-2.0
 # GEMINI_MODEL=gemini-2.5-flash # legacy alias supported for compatibility
 GEMINI_POLICY_TIMEOUT_MS=120000
 ```
-Without `GEMINI_API_KEY` the automation falls back to the local policy engine only.
+Without any Gemini API key the automation falls back to the local policy engine only.
 
 `GEMINI_DEFAULT_MODEL` defines the primary Gemini endpoint while `GEMINI_FALLBACK_MODELS` (comma-separated)
 lists backup models that will be tried whenever the default responds with transient errors (e.g. 503/UNAVAILABLE),
 before the system gives up and uses the local policy verdict.
+
+If `GEMINI_API_KEY_1`, `GEMINI_API_KEY_2`, and `GEMINI_API_KEY_3` are provided, the automation will try them
+in that order. When a key hits quota/rate/auth limits, it automatically rotates to the next configured key.
 
 ## Running the Automation
 ```bash

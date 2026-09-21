@@ -49,7 +49,7 @@
 - `artifacts/` is ignored by git but created on demand; review run outputs there for debugging.
 
 ## Operational Notes
-- Required secrets: `SURAMADU_USERNAME`, `SURAMADU_PASSWORD`, optional `GEMINI_API_KEY` (configured via `.env`).
+- Required secrets: `SURAMADU_USERNAME`, `SURAMADU_PASSWORD`, optional `GEMINI_API_KEY_1`/`GEMINI_API_KEY_2`/`GEMINI_API_KEY_3` (configured via `.env`, with `GEMINI_API_KEY` kept as a legacy alias).
 - Set `GEMINI_MODEL` or `GEMINI_POLICY_TIMEOUT_MS` in `.env` to tune Gemini behaviour.
 - Use `npm run dev -- --dry-run <yaml>` to validate DSL changes without touching the browser.
 - `scripts/showReason.ts` can be executed with `npx ts-node --project tsconfig.json scripts/showReason.ts <detail-url>` to inspect AI outcomes for a specific article.
